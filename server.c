@@ -23,12 +23,7 @@
 
 #define MAX_CLIENTS 100 // Maximum number of simultaneous clients
 #define POLL_TIMEOUT 20000 // Timeout for poll in milliseconds
-
-struct client {
-    int fd; // client's file descriptor
-    int state; // current state of the connection
-    char buffer[BUFFER_SIZE]; // buffer for client data
-};
+volatile sig_atomic_t serverRunning = 1;
 
 // variables for handling the termination signal
 bool terminateSignalReceived = false;
@@ -43,7 +38,7 @@ struct {
     uint8_t udp_retries;
 } config; // default values
 
-char Display_name[MAX_DISPLAY_NAME_LENGTH + 1] = ""; // Display name for the client
+
 
 typedef enum {
     ACCEPT_STATE,
@@ -52,6 +47,15 @@ typedef enum {
     ERROR_STATE,
     END_STATE
 } State;
+
+typedef struct {
+    int fd;
+    State state;
+    char buffer[BUFFER_SIZE];
+    char username[MAX_USERNAME_LENGTH];
+    char channel[MAX_CHANNEL_ID_LENGTH];
+    char secret[MAX_SECRET_LENGTH];
+} Client;
 
 void signalHandler(int signal) {
     if (signal == SIGINT) {
@@ -101,109 +105,100 @@ void parse_arguments(int argc, char* argv[]) {
 
 
 
-int accept_state(int sockfd) {
-    struct pollfd fds[MAX_CLIENTS]; // Array of pollfd structures for poll()
-    struct client clients[MAX_CLIENTS]; // Client state information
-    int nfds = 1; // Number of file descriptors being polled
 
-// Initialize all client fds to -1 for poll
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        fds[i].fd = -1;
-        fds[i].events = POLLIN;
-        clients[i].fd = -1; // Indicate unused slot
-    }
+void handle_accept_state(Client *client) {
+    char displayName[MAX_DISPLAY_NAME_LENGTH];
+    char auth_message[BUFFER_SIZE];
+    int recv_auth = 0;
 
-    listen(sockfd, MAX_CLIENTS);
-    fds[0].fd = sockfd; // Listening socket
-    fds[0].events = POLLIN;
-    clients[0].fd = sockfd; // Set listening socket in clients array
-    clients[0].state = ACCEPT_STATE;
-
-    while (1) {
-
-        pthread_mutex_lock(&terminateSignalMutex);
-        if (errno == EINTR && terminateSignalReceived) {
-            pthread_mutex_unlock(&terminateSignalMutex);
-            exit(0);
+    while (recv_auth == 0) {
+        int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
+        if (recv_len < 0) {
+            perror("Error receiving data");
+         //   return ERROR_STATE;
+        } else if (recv_len == 0) {
+            printf("Client disconnected.\n");
+          //  return END_STATE;
         }
-        pthread_mutex_unlock(&terminateSignalMutex);
 
-        int poll_count = poll(fds, nfds, POLL_TIMEOUT);
-        if (poll_count < 0) {
-            perror("Poll failed");
+        client->buffer[recv_len] = '\0';
+        printf("Received in ACCEPT_STATE: %s\n", client->buffer);
+        if (strncmp(client->buffer, "AUTH ", 5) == 0) {
+            if (sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, displayName) == 3) {
+                printf("Username: %s\n", client->username);
+                printf("Secret: %s\n", client->secret);
+                printf("Display name: %s\n", displayName);
+                recv_auth = 1;
+                client->state = OPEN_STATE;
+            } else {
+                printf("Invalid AUTH message\n");
+                send(client->fd, "Invalid AUTH message\r\n", 22, 0);
+            }
+
+        }
+
+
+    }
+}
+
+
+void handle_auth_state(Client *client) {
+    while (client->state == AUTH_STATE) {
+        int nbytes = read(client->fd, client->buffer, BUFFER_SIZE - 1);
+        if (nbytes <= 0) {
+            if (nbytes == 0) {
+                printf("Client disconnected during auth state.\n");
+            } else {
+                perror("Read error in auth state");
+            }
+            client->state = END_STATE;
             break;
         }
+        client->buffer[nbytes] = '\0';
+        printf("Received in AUTH_STATE: %s\n", client->buffer);
 
-        for (int i = 0; i < nfds; i++) {
-            if (fds[i].revents & POLLIN) // Check for incoming data
-            {
-                if (fds[i].fd == sockfd) {
-                    // Handle new connection
-                    struct sockaddr_in cli_addr;
-                    socklen_t clilen = sizeof(cli_addr);
-                    int newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
-                    if (newsockfd < 0) {
-                        perror("ERROR on accept");
-                        continue;
-                    }
-                    // Add new client
-                    for (int j = 0; j < MAX_CLIENTS; j++) {
-                        if (clients[j].fd < 0) {
-                            clients[j].fd = newsockfd;
-                            clients[j].state = AUTH_STATE; // Initial state
-                            fds[j].fd = newsockfd;
-                            fds[j].events = POLLIN;
-                            if (j >= nfds) nfds = j + 1;
-                            break;
-                        }
-                    }
-                } else {
-                    // Handle existing client
-                    int n = read(fds[i].fd, clients[i].buffer, BUFFER_SIZE - 1);
-                    if (n <= 0) {
-                        // Client closed connection or error
-                        if (n < 0) {
-                            perror("ERROR reading from socket");
-                        } else {
-                            printf("Client disconnected\n");
-                        }
-                        close(fds[i].fd);
-                        fds[i].fd = -1; // Remove from poll set
-                        clients[i].fd = -1;
-                    } else {
-                        // Ensure the string is null-terminated
-                        clients[i].buffer[n] = '\0';
 
-                        // Process client request based on current state
-                        switch (clients[i].state) {
-                            case AUTH_STATE:
-                                // Assume AUTH_STATE completes here and transitions to OPEN_STATE
-                                // For demonstration, let's just print and transition
-                                printf("Authentication request: %s\n", clients[i].buffer);
-                                clients[i].state = OPEN_STATE;  // Transition to OPEN_STATE after authentication
-                                break;
-                            case OPEN_STATE:
-                                // Log or print the message received from the client
-                                printf("Message from client: %s\n", clients[i].buffer);
-                                // Here you could add additional logic to handle the message further
-                                break;
-                            case ERROR_STATE:
-                            case END_STATE:
-                                // Clean up and close
-                                close(fds[i].fd);
-                                fds[i].fd = -1; // Remove from poll set
-                                clients[i].fd = -1;
-                                break;
-                        }
-                    }
-                }
-            }
+       // if (authenticate(client->buffer)) {
+       ///     printf("Authentication successful\n");
+        //    client->state = OPEN_STATE;
+     //   } else {
+       //     printf("Authentication failed\n");
+       //     client->state = ERROR_STATE;
+       // }
+    }
+}
+
+void handle_open_state(Client *client) {
+    printf("Client %s connected\n", client->username);
+    while (client->state == OPEN_STATE) {
+        int nbytes = read(client->fd, client->buffer, BUFFER_SIZE - 1);
+
+        client->buffer[nbytes] = '\0';
+        printf("Received in OPEN_STATE: %s\n", client->buffer);
+
+
+        if (strcmp(client->buffer, "BYE\r\n") == 0) {
+            printf("Server received BYE\n");
+            client->state = END_STATE;
         }
     }
-
-
-
 }
+
+void handle_error_state(Client *client) {
+
+    send(client->fd, "Error occurred\r\n", 16, 0);
+    client->state = END_STATE;
+}
+
+void handle_end_state(Client *client) {
+
+    close(client->fd);
+
+    client->fd = -1;
+
+    exit (0);
+}
+
 
 
 
@@ -220,40 +215,67 @@ void FSM_function() {
     serv_addr.sin_addr.s_addr = inet_addr(config.server_ip);
     serv_addr.sin_port = htons(config.server_port);
 
-    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("ERROR on binding");
         exit(1);
     }
-    State state = ACCEPT_STATE;
-    while (1) {
-        switch (state) {
-            case ACCEPT_STATE:
 
-                state = accept_state(sockfd);
-                break;
-            case AUTH_STATE:
 
-                // state = AUTH_STATETCP(sock, state);
-                break;
-            case OPEN_STATE:
 
-                //state = Open_stateTCP(sock, state);
-                break;
-            case ERROR_STATE:
+    listen(sockfd, MAX_CLIENTS);
 
-                // state = Error_stateTCP(sock);
-                break;
-            case END_STATE:
+            while (serverRunning) {
+                struct sockaddr_in cli_addr; // Structure for client address
+                socklen_t clilen = sizeof(cli_addr); // Size of client address
+                int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+                if (newsockfd < 0) {
+                    perror("ERROR on accept");
+                    continue;
+                }
 
-                // state = End_stateTCP(sock);
-                break;
-            default:
-                perror("Invalid state");
-                exit(EXIT_FAILURE);
-        }
+                pid_t pid = fork();
+                if (pid == 0) {
+                    close(sockfd);
+                    Client client;
+                    client.fd = newsockfd;
+                    client.state = ACCEPT_STATE;
+                    memset(client.buffer, 0, BUFFER_SIZE);
+
+                    while (client.state != END_STATE) {
+                        switch (client.state) {
+                            case ACCEPT_STATE:
+                                handle_accept_state(&client);
+                                break;
+                            case AUTH_STATE:
+                                handle_auth_state(&client);
+                                break;
+                            case OPEN_STATE:
+                                handle_open_state(&client);
+                                break;
+                            case ERROR_STATE:
+                                handle_error_state(&client);
+                                break;
+                            case END_STATE:
+                                handle_end_state(&client);
+                                break;
+                            default:
+                                printf("Unknown state\n");
+                                client.state = END_STATE;
+                        }
+                    }
+
+                    close(client.fd);
+                    exit(0);
+                } else if (pid > 0) {
+                    close(newsockfd);
+                } else {
+                    perror("ERROR on fork");
+                    close(newsockfd);
+                }
+            }
+            close(sockfd);
 
     }
-}
 
 int main(int argc, char *argv[]){
     if (argc == 1) {
