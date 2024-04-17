@@ -24,6 +24,8 @@
 
 #define MAX_CLIENTS 100 // Maximum number of simultaneous clients
 #define POLL_TIMEOUT 20000 // Timeout for poll in milliseconds
+#define DEFAULT_CHANNEL "general"
+
 volatile sig_atomic_t serverRunning = 1;
 
 // variables for handling the termination signal
@@ -163,6 +165,41 @@ void signalHandler(int signal) {
     }
 }
 
+
+bool Check_username(const char* username) {
+    size_t length = strlen(username);
+    if (length > MAX_USERNAME_LENGTH)
+        return false;
+    for (size_t i = 0; i < length; i++) {
+        if (!isalnum(username[i]) && username[i] != '-')
+            return false;
+    }
+    return true;
+}
+
+
+bool Check_secret(const char* secret) {
+    size_t length = strlen(secret);
+    if (length > MAX_SECRET_LENGTH)
+        return false;
+    for (size_t i = 0; i < length; i++) {
+        if (!isalnum(secret[i]) && secret[i] != '-')
+            return false;
+    }
+    return true;
+}
+
+bool Check_Displayname(const char* displayName) {
+    size_t length = strlen(displayName);
+    if (length > MAX_DISPLAY_NAME_LENGTH) return false;
+    for (size_t i = 0; i < length; i++) {
+        if (!isprint(displayName[i]) || displayName[i] < 0x21 || displayName[i] > 0x7E)
+            return false;
+    }
+    return true;
+}
+
+
 void print_usage() {
     printf("Usage: server [options]\n");
     printf("Options:\n");
@@ -236,19 +273,22 @@ void handle_accept_state(Client *client) {
 
         client->buffer[recv_len] = '\0';
         if (strncmp(client->buffer, "AUTH ", 5) == 0) {
-            if (sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, displayName) == 3) {
-                printf("Username: %s\n", client->username);
-                printf("Secret: %s\n", client->secret);
-                printf("Display name: %s\n", displayName);
+            int args_count = sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, displayName);
+            if (args_count == 3 && Check_username(client->username) && Check_secret(client->secret) && Check_Displayname(displayName)){
                 log_message("RECV", client->fd, client->buffer);
                 snprintf(response, sizeof(response), "REPLY OK IS Auth success.\r\n");
                 send(client->fd, response, strlen(response), 0);
                 log_message("SENT", client->fd, response);
+                broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), client->buffer, client);
                 recv_auth = 1;
                 client->state = OPEN_STATE;
             } else {
-                printf("Invalid AUTH message\n");
-                send(client->fd, "Invalid AUTH message\r\n", 22, 0);
+                log_message("RECV", client->fd, client->buffer);
+                snprintf(response, sizeof(response), "REPLY NOK IS Auth success.\r\n");
+                send(client->fd, response, strlen(response), 0);
+                log_message("SENT", client->fd, response);
+                fprintf(stderr, "Invalid AUTH message\n");
+                recv_auth = 0;
             }
 
         }
