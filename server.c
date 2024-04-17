@@ -20,6 +20,7 @@
 #define MAX_SECRET_LENGTH 128
 #define MAX_DISPLAY_NAME_LENGTH 20
 #define MAX_CHANNEL_ID_LENGTH 20
+#define MAX_CHANNELS 100 // Maximum number of channels
 
 #define MAX_CLIENTS 100 // Maximum number of simultaneous clients
 #define POLL_TIMEOUT 20000 // Timeout for poll in milliseconds
@@ -36,7 +37,7 @@ struct {
     uint16_t server_port;
     uint16_t udp_timeout;
     uint8_t udp_retries;
-} config; // default values
+} config;
 
 
 
@@ -56,6 +57,103 @@ typedef struct {
     char channel[MAX_CHANNEL_ID_LENGTH];
     char secret[MAX_SECRET_LENGTH];
 } Client;
+
+
+typedef struct {
+    char channelName[MAX_CHANNEL_ID_LENGTH];
+    Client *clients[MAX_CLIENTS];  // Pointers to clients in this channel
+    int clientCount;
+} Channel;
+
+Channel channels[MAX_CHANNELS]; // Array to hold all channels
+Client clients[MAX_CLIENTS];  // Global client list
+
+bool allowMultipleConnections = false;  // Toggleable feature
+
+
+Channel* get_or_create_channel(const char* channelName) {
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        if (strcmp(channels[i].channelName, channelName) == 0) {
+            return &channels[i]; // Channel exists
+        }
+    }
+
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        if (channels[i].channelName[0] == '\0') { // Empty slot
+            strcpy(channels[i].channelName, channelName);
+            channels[i].clientCount = 0;
+            return &channels[i]; // Newly created channel
+        }
+    }
+
+    return NULL; // No available slot or max channels reached
+}
+
+void leave_channel(Client *client) {
+    if (client->channel[0] == '\0')
+        return; // Client is not in any channel
+
+    Channel* channel = get_or_create_channel(client->channel);
+    if (channel) {
+        for (int i = 0; i < channel->clientCount; i++) {
+            if (channel->clients[i] == client) {
+                // Shift the rest of the clients down in the array
+                memmove(&channel->clients[i], &channel->clients[i + 1], (channel->clientCount - i - 1) * sizeof(Client*));
+                channel->clientCount--;
+                break;
+            }
+        }
+    }
+
+    client->channel[0] = '\0'; // Remove channel from client
+}
+
+
+int join_channel(Client *client, const char* channelName) {
+    // Leave any previous channel
+    leave_channel(client);
+
+    Channel* channel = get_or_create_channel(channelName);
+    if (!channel) {
+        return -1; // Failed to create or find channel
+    }
+
+    if (channel->clientCount < MAX_CLIENTS) {
+        channel->clients[channel->clientCount++] = client;
+        strcpy(client->channel, channelName); // Update client's current channel
+        return 0;
+    }
+
+    return -1; // Channel is full
+}
+
+Channel* find_channel_by_id(const char* channelID) {
+    // Assuming there is a global array or list of channels
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        if (strcmp(channels[i].channelName, channelID) == 0) {
+            return &channels[i];
+        }
+    }
+    return NULL;
+}
+
+void broadcast_message(Channel *channel, const char *message, Client *sender) {
+    Channel *CHANNEL = find_channel_by_id(channel->channelName);
+    if (!CHANNEL) {
+        fprintf(stderr, "Channel %s not found.\n", channel->channelName);
+        return;
+    }
+    for (int i = 0; i < CHANNEL->clientCount; i++) {
+        if (CHANNEL->clients[i] != sender) { // Ensure not to send the message to the sender
+            send(CHANNEL->clients[i]->fd, message, strlen(message), 0);
+            printf("Sent to %s: %s\n", CHANNEL->clients[i]->username, message); // Debug output
+        }
+    }
+
+
+}
+
+
 
 void signalHandler(int signal) {
     if (signal == SIGINT) {
@@ -103,13 +201,28 @@ void parse_arguments(int argc, char* argv[]) {
 
 }
 
+void log_message(const char* prefix, int fd, const char* message) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    if (getpeername(fd, (struct sockaddr *)&addr, &addr_len) == -1) {
+        perror("getpeername failed");
+        return;
+    }
 
+    char clientIP[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, clientIP, INET_ADDRSTRLEN);
+    int clientPort = ntohs(addr.sin_port);
+
+    printf("%s %s:%d | %s\n", prefix, clientIP, clientPort, message);
+}
 
 
 void handle_accept_state(Client *client) {
     char displayName[MAX_DISPLAY_NAME_LENGTH];
     char auth_message[BUFFER_SIZE];
+    char response[1024];
     int recv_auth = 0;
+
 
     while (recv_auth == 0) {
         int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
@@ -122,12 +235,15 @@ void handle_accept_state(Client *client) {
         }
 
         client->buffer[recv_len] = '\0';
-        printf("Received in ACCEPT_STATE: %s\n", client->buffer);
         if (strncmp(client->buffer, "AUTH ", 5) == 0) {
             if (sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, displayName) == 3) {
                 printf("Username: %s\n", client->username);
                 printf("Secret: %s\n", client->secret);
                 printf("Display name: %s\n", displayName);
+                log_message("RECV", client->fd, client->buffer);
+                snprintf(response, sizeof(response), "REPLY OK IS Auth success.\r\n");
+                send(client->fd, response, strlen(response), 0);
+                log_message("SENT", client->fd, response);
                 recv_auth = 1;
                 client->state = OPEN_STATE;
             } else {
@@ -143,46 +259,61 @@ void handle_accept_state(Client *client) {
 
 
 void handle_auth_state(Client *client) {
-    while (client->state == AUTH_STATE) {
-        int nbytes = read(client->fd, client->buffer, BUFFER_SIZE - 1);
-        if (nbytes <= 0) {
-            if (nbytes == 0) {
-                printf("Client disconnected during auth state.\n");
-            } else {
-                perror("Read error in auth state");
-            }
-            client->state = END_STATE;
-            break;
-        }
-        client->buffer[nbytes] = '\0';
-        printf("Received in AUTH_STATE: %s\n", client->buffer);
 
-
-       // if (authenticate(client->buffer)) {
-       ///     printf("Authentication successful\n");
-        //    client->state = OPEN_STATE;
-     //   } else {
-       //     printf("Authentication failed\n");
-       //     client->state = ERROR_STATE;
-       // }
-    }
 }
 
 void handle_open_state(Client *client) {
-    printf("Client %s connected\n", client->username);
+    char command[10];
+
     while (client->state == OPEN_STATE) {
-        int nbytes = read(client->fd, client->buffer, BUFFER_SIZE - 1);
-
-        client->buffer[nbytes] = '\0';
-        printf("Received in OPEN_STATE: %s\n", client->buffer);
-
-
-        if (strcmp(client->buffer, "BYE\r\n") == 0) {
-            printf("Server received BYE\n");
+        int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
+        if (recv_len < 0) {
+            perror("Error receiving data");
+            client->state = ERROR_STATE;
+            continue;
+        } else if (recv_len == 0) {
+            printf("Client disconnected.\n");
             client->state = END_STATE;
+            break;
+        }
+
+        client->buffer[recv_len] = '\0';
+        sscanf(client->buffer, "%s", command);
+
+        if (strcmp(command, "JOIN") == 0) {
+            char channelID[MAX_CHANNEL_ID_LENGTH];
+            char displayName[MAX_DISPLAY_NAME_LENGTH];
+            if (sscanf(client->buffer, "JOIN %s AS %s", channelID, displayName) == 2) {
+                log_message("RECV", client->fd, client->buffer);
+                if (join_channel(client, channelID) == 0) {
+                    // Successfully joined
+                    send(client->fd, "REPLY OK IS Joined channel\r\n", 28, 0);
+                    log_message("SENT", client->fd, client->buffer);
+                    broadcast_message(get_or_create_channel(client->channel), client->buffer, client);
+                } else {
+                    send(client->fd, "ERR Unable to join channel\r\n", 28, 0);
+                }
+            } else {
+                send(client->fd, "ERR FROM Server IS Invalid JOIN format\r\n", 40, 0);
+            }
+        } else if (strcmp(command, "MSG") == 0) {
+            char messageContent[BUFFER_SIZE];
+            char fromDisplayName[MAX_DISPLAY_NAME_LENGTH];
+            if (sscanf(client->buffer, "MSG FROM %s IS %[^\t\n]", fromDisplayName, messageContent) == 2) {
+                log_message("RECV", client->fd, client->buffer);
+            } else {
+                send(client->fd, "ERR FROM Server IS Invalid MSG format\r\n", 38, 0);
+            }
+        } else if (strcmp(client->buffer, "BYE\r\n") == 0) {
+            printf("Server received BYE\n");
+            send(client->fd, "BYE\r\n", 5, 0);
+            client->state = END_STATE;
+        } else {
+            send(client->fd, "ERR FROM Server IS Unknown command\r\n", 36, 0);
         }
     }
 }
+
 
 void handle_error_state(Client *client) {
 
