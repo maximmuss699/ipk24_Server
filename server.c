@@ -362,7 +362,7 @@ void handle_open_state(Client *client) {
                 if (join_channel(client, currentChannel) != 0) {
                     fprintf(stderr, "Error joining channel\n");
                 }
-                    broadcast_message(get_or_create_channel(client->channel), client->buffer, client);
+                    broadcast_message(get_or_create_channel(client->channel), response, client);
                 sleep(1);
             } else {
                 send(client->fd, "ERR FROM Server IS Invalid JOIN format\r\n", 40, 0);
