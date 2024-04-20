@@ -99,6 +99,17 @@ bool allowMultipleConnections = false;  // Toggleable feature
 
 
 
+Channel* find_channel_by_id(const char* channelID) {
+    // Assuming there is a global array or list of channels
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        if (strcmp(channels[i].channelName, channelID) == 0) {
+            // printf("Found channel by ID %s\n", channelID);
+            return &channels[i];
+        }
+    }
+    return NULL;
+}
+
 
 Channel* get_or_create_channel(const char* channelName) {
     for (int i = 0; i < MAX_CHANNELS; i++) {
@@ -111,32 +122,44 @@ Channel* get_or_create_channel(const char* channelName) {
         if (channels[i].channelName[0] == '\0') { // Empty slot
             strncpy(channels[i].channelName, channelName, MAX_CHANNEL_ID_LENGTH - 1);
             channels[i].clientCount = 0;
+            printf("Created new channel %s\n", channelName);
+            printf("All channels: %s\n", channels[i].channelName);
+            printf("Clients in channel: %d\n", channels[i].clientCount);
             return &channels[i]; // Newly created channel
         }
     }
 
     return NULL;
 }
-
 void leave_channel(Client *client) {
-    if (client->channel[0] == '\0')
+    if (client->channel[0] == '\0') {
+        printf("Client is not in any channel.\n");
         return; // Client is not in any channel
+    }
 
-    Channel* channel = get_or_create_channel(client->channel);
-    if (channel)  // Check if the channel exists
-    {
-        for (int i = 0; i < channel->clientCount; i++) {
-            if (channel->clients[i] == client) {
-                // Shift the rest of the clients down in the array
-                memmove(&channel->clients[i], &channel->clients[i + 1], (channel->clientCount - i - 1) * sizeof(Client*));
-                channel->clientCount--;
-                memset(client->channel, 0, MAX_CHANNEL_ID_LENGTH);
-                break;
-            }
+    Channel* channel = find_channel_by_id(client->channel);
+    if (!channel) {
+        printf("No such channel found: %s\n", client->channel);
+        return; // Channel does not exist
+    }
+
+    bool found = false;
+    for (int i = 0; i < channel->clientCount; i++) {
+        if (channel->clients[i] == client) {
+            printf("Removing client %s from channel %s\n", client->username, channel->channelName);
+            // Shift the rest of the clients down in the array
+            memmove(&channel->clients[i], &channel->clients[i + 1], (channel->clientCount - i - 1) * sizeof(Client*));
+            channel->clientCount--;
+            memset(client->channel, 0, MAX_CHANNEL_ID_LENGTH);
+            printf("Client %s left channel %s. New count: %d\n", client->username, channel->channelName, channel->clientCount);
+            found = true;
+            break;
         }
     }
 
-
+    if (!found) {
+        printf("Client %s not found in channel %s\n", client->username, client->channel);
+    }
 }
 
 
@@ -163,16 +186,7 @@ int join_channel(Client *client, const char* channelName) {
     return -1; // Channel is full
 }
 
-Channel* find_channel_by_id(const char* channelID) {
-    // Assuming there is a global array or list of channels
-    for (int i = 0; i < MAX_CHANNELS; i++) {
-        if (strcmp(channels[i].channelName, channelID) == 0) {
-           // printf("Found channel by ID %s\n", channelID);
-            return &channels[i];
-        }
-    }
-    return NULL;
-}
+
 
 void broadcast_message(Channel *channel, const char *message, Client *sender) {
     // Check if the channel pointer is NULL before accessing its properties
@@ -323,6 +337,10 @@ void handle_open_state(Client *client) {
 
         if (strcmp(command, "JOIN") == 0) {
             if (sscanf(client->buffer, "JOIN %s AS %s", channelID, displayName) == 2) {
+
+                if (client->channel[0] != '\0') {
+                    leave_channel(client);
+                }
                 strncpy(client->channel, channelID, MAX_CHANNEL_ID_LENGTH - 1);
                 client->channel[MAX_CHANNEL_ID_LENGTH - 1] = '\0';
                 strncpy(client->displayName, displayName, MAX_DISPLAY_NAME_LENGTH - 1);
@@ -341,7 +359,6 @@ void handle_open_state(Client *client) {
 
                 char currentChannel[MAX_CHANNEL_ID_LENGTH];
                 strncpy(currentChannel, client->channel, MAX_CHANNEL_ID_LENGTH);
-                leave_channel(client);
                 if (join_channel(client, currentChannel) != 0) {
                     fprintf(stderr, "Error joining channel\n");
                 }
