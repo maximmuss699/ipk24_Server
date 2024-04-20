@@ -300,6 +300,7 @@ void handle_accept_state(Client *client) {
 
         }
 
+
         client->buffer[recv_len] = '\0';
         if (strncmp(client->buffer, "AUTH ", 5) == 0) {
             int args_count = sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, client->displayName);
