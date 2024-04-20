@@ -43,6 +43,7 @@ volatile sig_atomic_t serverRunning = 1;
 bool terminateSignalReceived = false;
 pthread_mutex_t terminateSignalMutex = PTHREAD_MUTEX_INITIALIZER;
 
+uint16_t messageID = 0x0000;
 
 void signalHandler(int signal) {
     if (signal == SIGINT) {
@@ -262,70 +263,169 @@ void handle_end_state(Client *client) {
     exit (0);
 }
 
+void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uint8_t result, const char *message_contents, uint16_t ref_message_id) {
+    unsigned char buffer[1024];
+    int offset = 0;
+    int recv_confirm = 0;
+
+
+
+    uint16_t netOrderMessageID = htons(messageID);
+    buffer[offset++] = 0x01;  // Message type for REPLY
+    buffer[offset++] = (char)((netOrderMessageID >> 8) & 0xFF);
+    buffer[offset++] = (char)(netOrderMessageID & 0xFF);
+
+    // Результат операции
+    buffer[offset++] = result;
+
+
+    // ID сообщения, на которое мы отвечаем
+    uint16_t net_ref_message_id = htons(ref_message_id);
+    buffer[offset++] = (net_ref_message_id >> 8) & 0xFF;
+    buffer[offset++] = net_ref_message_id & 0xFF;
+
+    // Содержимое сообщения
+    int message_len = strlen(message_contents);
+    memcpy(buffer + offset, message_contents, message_len);
+    offset += message_len;
+
+    // Null-terminated string
+    buffer[offset++] = 0;
+
+    // Отправляем сообщение
+    if (sendto(sockfd, buffer, offset, 0, (struct sockaddr *)cli_addr, cli_len) < 0) {
+        perror("Failed to send reply");
+    } else {
+        printf("Reply sent successfully\n");
+    }
+    while(recv_confirm == 0){
+        int recv_len = recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
+        if (recv_len < 0) {
+            perror("Error receiving data");
+
+        }
+
+        buffer[recv_len] = '\0';
+        if (buffer[0] == 0x00) {
+            uint16_t receivedMessageID = (buffer[1] << 8) | buffer[2];
+            if (receivedMessageID == messageID) {
+                recv_confirm = 1;
+            }
+        }
+    }
+
+}
+
+void send_confirm(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uint16_t message_id) {
+    unsigned char buffer[1024];
+    int offset = 0;
+
+    uint16_t netOrderMessageID = htons(messageID);
+    buffer[offset++] = 0x00;  // Message type for CONFIRM
+    buffer[offset++] = (char)((netOrderMessageID >> 8) & 0xFF);
+    buffer[offset++] = (char)(netOrderMessageID & 0xFF);
+
+    // Отправляем сообщение
+    if (sendto(sockfd, buffer, offset, 0, (struct sockaddr *)cli_addr, cli_len) < 0) {
+        perror("Failed to send confirm");
+    } else {
+        printf("Confirm sent successfully\n");
+    }
+
+
+}
+
+
+
 void handle_udp_accept_state(Client *client) {
     char buffer[1024];
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
     int bytes_received;
 
+    while(client->state == ACCEPT_STATE) {
+        bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &cli_addr, &cli_len);
+        if (bytes_received < 0) {
+            perror("recvfrom failed");
+            client->state = ERROR_STATE;
+            return;
+        }
+        uint16_t receivedMessageID = (buffer[1] << 8) | buffer[2];
 
-    bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&cli_addr, &cli_len);
-    if (bytes_received < 0) {
-        perror("recvfrom failed");
-        client->state = ERROR_STATE;
-        return;
-    }
-
-
-
-    int offset = 0;
-    uint8_t message_type = buffer[offset++];
-    uint16_t message_id = (buffer[offset] << 8) | buffer[offset + 1];
-    offset += 2;
-
-    char username[100], display_name[100], secret[100];
-    int current_pos = 0;
+        send_confirm(client->fd, &cli_addr, cli_len, receivedMessageID);
 
 
-    strcpy(username, buffer + offset);
-    current_pos = strlen(username) + 1;
-    offset += current_pos;
+        size_t offset = 0;
+        size_t offset1 = 0;
+        uint8_t message_type = buffer[offset++];
+        offset1 += 2;
+
+        char username[100], display_name[100], secret[100];
+        int current_pos = 0;
+        strcpy(username, buffer + offset1);
+        current_pos = strlen(username) + 1;
+        offset1 += current_pos;
 
 
-    strcpy(display_name, buffer + offset);
-    current_pos = strlen(display_name) + 1;
-    offset += current_pos;
+        strcpy(display_name, buffer + offset1);
+        current_pos = strlen(display_name) + 1;
+        offset1 += current_pos;
+        strcpy(secret, buffer + offset1);
+
+        if (buffer[0] == 0x02) {
+        if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
+            strcpy(client->username, username);
+            strcpy(client->secret, secret);
+            strcpy(client->displayName, display_name);
+            client->state = OPEN_STATE;
+            send_reply(client->fd, &cli_addr, cli_len, 1, "Authentication successful", receivedMessageID);
 
 
-    strcpy(secret, buffer + offset);
+        } else {
+            client->state = ERROR_STATE;
+            char response[] = "Authentication failed";
+            sendto(client->fd, response, strlen(response), 0, (struct sockaddr *) &cli_addr, cli_len);
+        }
+    }else{
+            client->state = ERROR_STATE;
+            char response[] = "Authentication failed";
+            sendto(client->fd, response, strlen(response), 0, (struct sockaddr *) &cli_addr, cli_len);
 
-
-    printf("Received message details:\n");
-    printf("Message Type: %u\n", message_type);
-    printf("Message ID: %u\n", message_id);
-    printf("Username: %s\n", username);
-    printf("Display Name: %s\n", display_name);
-    printf("Secret: %s\n", secret);
-
-
-    if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
-
-        strcpy(client->username, username);
-        strcpy(client->secret, secret);
-        strcpy(client->displayName, display_name);
-
-
-        client->state = AUTH_STATE;
-
-
-        char response[] = "Authentication successful";
-        sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&cli_addr, cli_len);
-    } else {
-        client->state = ERROR_STATE;
-        char response[] = "Authentication failed";
-        sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&cli_addr, cli_len);
+        }
     }
 }
+
+void handle_udp_open_state(Client *client){
+    char buffer[1024];
+    struct sockaddr_in cli_addr;
+    socklen_t cli_len = sizeof(cli_addr);
+    int bytes_received;
+
+    while(client->state == OPEN_STATE) {
+        bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &cli_addr, &cli_len);
+        if (bytes_received < 0) {
+            perror("recvfrom failed");
+            client->state = ERROR_STATE;
+            return;
+        }
+        uint16_t receivedMessageID = (buffer[1] << 8) | buffer[2];
+
+        send_confirm(client->fd, &cli_addr, cli_len, receivedMessageID);
+
+        size_t offset = 0;
+        size_t offset1 = 0;
+        uint8_t message_type = buffer[offset++];
+        offset1 += 2;
+
+        char username[100], display_name[100], secret[100];
+        int current_pos = 0;
+        strcpy(username, buffer + offset1);
+        current_pos = strlen(username) + 1;
+        offset1 += current_pos;
+    }
+
+}
+
 
 
 void* client_handler(void* arg) {
@@ -364,13 +464,16 @@ void* client_handler(void* arg) {
         } else if (protocol == 1) {  // UDP
             switch (client.state) {
                 case ACCEPT_STATE:
-                 handle_udp_accept_state(&client);
+                    handle_udp_accept_state(&client);
                     break;
                 case AUTH_STATE:
                   //  handle_udp_auth_state(&client);
+                    printf("UDP AUTH STATE\n");
+                    close(client.fd);
+                    exit(1);
                     break;
                 case OPEN_STATE:
-                   // handle_udp_open_state(&client);
+                    handle_udp_open_state(&client);
                     break;
                 case ERROR_STATE:
                     //handle_udp_error_state(&client);
