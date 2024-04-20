@@ -7,64 +7,22 @@
 #include <unistd.h>
 #include <poll.h>
 #include <search.h>
-#include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <getopt.h>
+#include "validation.h"
+#include "cli.h"
 
-// Global configuration
-struct {
-    char server_ip[INET_ADDRSTRLEN];
-    uint16_t server_port;
-    uint16_t udp_timeout;
-    uint8_t udp_retries;
-} config;
+
+
 typedef struct {
     int sockfd;
 } thread_arg;
 
 
-
-void print_usage() {
-    printf("Usage: server [options]\n");
-    printf("Options:\n");
-    printf("  -l <IP address>          Server listening IP address for welcome sockets (default: 0.0.0.0)\n");
-    printf("  -p <port>                Server listening port for welcome sockets (default: 4567)\n");
-    printf("  -d <timeout>             UDP confirmation timeout in milliseconds (default: 250)\n");
-    printf("  -r <retries>             Maximum number of UDP retransmissions (default: 3)\n");
-    printf("  -h                       Prints this help output and exits\n");
-}
-
-
-void parse_arguments(int argc, char* argv[]) {
-    int opt;
-    while ((opt = getopt(argc, argv, "l:p:d:r:h")) != -1) {
-        switch (opt) {
-            case 'l':
-                strncpy(config.server_ip, optarg, INET_ADDRSTRLEN);
-                break;
-            case 'p':
-                config.server_port = (uint16_t)atoi(optarg);
-                break;
-            case 'd':
-                config.udp_timeout = (uint16_t)atoi(optarg);
-                break;
-            case 'r':
-                config.udp_retries = (uint8_t)atoi(optarg);
-                break;
-            case 'h':
-                print_usage();
-                exit(EXIT_SUCCESS);
-            default:
-                print_usage();
-                exit(EXIT_FAILURE);
-        }
-    }
-
-}
 
 
 #define BUFFER_SIZE 1024
@@ -73,7 +31,6 @@ void parse_arguments(int argc, char* argv[]) {
 #define MAX_DISPLAY_NAME_LENGTH 20
 #define MAX_CHANNEL_ID_LENGTH 20
 #define MAX_CHANNELS 10 // Maximum number of channels
-
 #define MAX_CLIENTS 10 // Maximum number of simultaneous clients
 #define POLL_TIMEOUT 20000 // Timeout for poll in milliseconds
 #define DEFAULT_CHANNEL "default"
@@ -83,40 +40,6 @@ volatile sig_atomic_t serverRunning = 1;
 // variables for handling the termination signal
 bool terminateSignalReceived = false;
 pthread_mutex_t terminateSignalMutex = PTHREAD_MUTEX_INITIALIZER;
-
-bool Check_username(const char* username) {
-    size_t length = strlen(username);
-    if (length > MAX_USERNAME_LENGTH)
-        return false;
-    for (size_t i = 0; i < length; i++) {
-        if (!isalnum(username[i]) && username[i] != '-')
-            return false;
-    }
-    return true;
-}
-
-
-bool Check_secret(const char* secret) {
-    size_t length = strlen(secret);
-    if (length > MAX_SECRET_LENGTH)
-        return false;
-    for (size_t i = 0; i < length; i++) {
-        if (!isalnum(secret[i]) && secret[i] != '-')
-            return false;
-    }
-    return true;
-}
-
-bool Check_Displayname(const char* displayName) {
-    size_t length = strlen(displayName);
-    if (length > MAX_DISPLAY_NAME_LENGTH) return false;
-    for (size_t i = 0; i < length; i++) {
-        if (!isprint(displayName[i]) || displayName[i] < 0x21 || displayName[i] > 0x7E)
-            return false;
-    }
-    return true;
-}
-
 
 
 void signalHandler(int signal) {

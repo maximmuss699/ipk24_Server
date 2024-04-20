@@ -1,11 +1,21 @@
 CC=gcc
 CFLAGS=-I. -Wall -Wextra -pedantic -std=c99 -g
 
-all: ipk24server
+TARGET=ipk24server
 
-ipk24server: server.c
-	$(CC) -o ipk24server  server.c $(CFLAGS)
+SOURCES=server.c validation.c cli.c
+
+
+OBJECTS=$(SOURCES:.c=.o)
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CC) -o $@ $^ $(CFLAGS)
+
+%.o: %.c
+	$(CC) -c $< -o $@ $(CFLAGS)
 
 .PHONY: clean
 clean:
-	rm -f ipk24server
+	rm -f $(TARGET) $(OBJECTS)
