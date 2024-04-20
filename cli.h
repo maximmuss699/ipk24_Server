@@ -2,7 +2,7 @@
 #define CLI_H
 
 #include <stdint.h>
-
+#include <getopt.h>
 // Define necessary constants
 #define INET_ADDRSTRLEN 16
 
@@ -15,7 +15,7 @@ struct {
 } config;
 
 // Function declarations
-void print_usage();
+void print_usage(void);
 void parse_arguments(int argc, char* argv[]);
 
 #endif // CLI_H

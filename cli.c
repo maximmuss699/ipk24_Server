@@ -4,7 +4,7 @@
 #include <string.h>
 #include <unistd.h> // For getopt
 
-void print_usage() {
+void print_usage(void) {
     printf("Usage: server [options]\n");
     printf("Options:\n");
     printf("  -l <IP address>          Server listening IP address for welcome sockets (default: 0.0.0.0)\n");

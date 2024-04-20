@@ -12,14 +12,16 @@
 #include <signal.h>
 #include <netdb.h>
 #include <pthread.h>
-#include <getopt.h>
 #include "validation.h"
 #include "cli.h"
+#include "channels.h"
+#include "client.h"
 
 
 
 typedef struct {
     int sockfd;
+    int protocol;
 } thread_arg;
 
 
@@ -66,161 +68,8 @@ void log_message(const char* prefix, int fd, const char* message) {
 }
 
 
-
-typedef enum {
-    ACCEPT_STATE,
-    AUTH_STATE,
-    OPEN_STATE,
-    ERROR_STATE,
-    END_STATE
-} State;
-
-typedef struct {
-    int fd;
-    State state;
-    char buffer[BUFFER_SIZE];
-    char username[MAX_USERNAME_LENGTH];
-    char channel[MAX_CHANNEL_ID_LENGTH];
-    char secret[MAX_SECRET_LENGTH];
-    char displayName[MAX_DISPLAY_NAME_LENGTH];
-} Client;
-
-
-typedef struct {
-    char channelName[MAX_CHANNEL_ID_LENGTH];
-    Client *clients[MAX_CLIENTS];  // Pointers to clients in this channel
-    int clientCount;
-} Channel;
-
-Channel channels[MAX_CHANNELS]; // Array to hold all channels
-Client clients[MAX_CLIENTS];  // Global client list
-
 bool allowMultipleConnections = false;  // Toggleable feature
 
-
-
-Channel* find_channel_by_id(const char* channelID) {
-    // Assuming there is a global array or list of channels
-    for (int i = 0; i < MAX_CHANNELS; i++) {
-        if (strcmp(channels[i].channelName, channelID) == 0) {
-            // printf("Found channel by ID %s\n", channelID);
-            return &channels[i];
-        }
-    }
-    return NULL;
-}
-
-
-Channel* get_or_create_channel(const char* channelName) {
-    for (int i = 0; i < MAX_CHANNELS; i++) {
-        if (strcmp(channels[i].channelName, channelName) == 0) {
-            return &channels[i]; // Channel exists
-        }
-    }
-
-    for (int i = 0; i < MAX_CHANNELS; i++) {
-        if (channels[i].channelName[0] == '\0') { // Empty slot
-            strncpy(channels[i].channelName, channelName, MAX_CHANNEL_ID_LENGTH - 1);
-            channels[i].clientCount = 0;
-            printf("Created new channel %s\n", channelName);
-            printf("All channels: %s\n", channels[i].channelName);
-            printf("Clients in channel: %d\n", channels[i].clientCount);
-            return &channels[i]; // Newly created channel
-        }
-    }
-
-    return NULL;
-}
-void leave_channel(Client *client) {
-    if (client->channel[0] == '\0') {
-        printf("Client is not in any channel.\n");
-        return; // Client is not in any channel
-    }
-
-    Channel* channel = find_channel_by_id(client->channel);
-    if (!channel) {
-        printf("No such channel found: %s\n", client->channel);
-        return; // Channel does not exist
-    }
-
-    bool found = false;
-    for (int i = 0; i < channel->clientCount; i++) {
-        if (channel->clients[i] == client) {
-            printf("Removing client %s from channel %s\n", client->username, channel->channelName);
-            // Shift the rest of the clients down in the array
-            memmove(&channel->clients[i], &channel->clients[i + 1], (channel->clientCount - i - 1) * sizeof(Client*));
-            channel->clientCount--;
-            memset(client->channel, 0, MAX_CHANNEL_ID_LENGTH);
-            printf("Client %s left channel %s. New count: %d\n", client->username, channel->channelName, channel->clientCount);
-            found = true;
-            break;
-        }
-    }
-
-    if (!found) {
-        printf("Client %s not found in channel %s\n", client->username, client->channel);
-    }
-}
-
-
-int join_channel(Client *client, const char* channelName) {
-    if (strlen(channelName) >= MAX_CHANNEL_ID_LENGTH) {
-        fprintf(stderr, "Error: channel name too long\n");
-        return -1;
-    }
-    // Leave any previous channel
-    leave_channel(client);
-
-    Channel* channel = get_or_create_channel(channelName);
-    if (!channel) {
-        return -1; // Failed to create or find channel
-    }
-
-    if (channel->clientCount < MAX_CLIENTS) {
-        channel->clients[channel->clientCount++] = client;
-
-        strncpy(client->channel, channelName, MAX_CHANNEL_ID_LENGTH - 1);
-        return 0;
-    }
-
-    return -1; // Channel is full
-}
-
-
-
-void broadcast_message(Channel *channel, const char *message, Client *sender) {
-    // Check if the channel pointer is NULL before accessing its properties
-
-    Channel *CHANNEL = find_channel_by_id(channel->channelName);
-    if (!CHANNEL) {
-        fprintf(stderr, "Channel %s not found.\n", channel->channelName);
-        return;
-    }
-
-    printf("Broadcasting message to %d clients in channel %s\n", channel->clientCount, channel->channelName);
-
-    for (int i = 0; i < channel->clientCount; i++) {
-        Client *client = channel->clients[i];  // Get a pointer to the client
-
-        // Check if the client pointer is NULL before using it
-        if (!client) {
-            fprintf(stderr, "Error: Null client in channel %s at index %d.\n", channel->channelName, i);
-            continue;
-        }
-
-        // Skip the sender
-        if (client == sender) {
-            continue;
-        }
-
-        sleep(1);
-        if (send(client->fd, message, strlen(message), 0) < 0) {
-            perror("Error sending message");
-        } else {
-            printf ("Message %s sent to %s\n", message, client->username);
-        }
-    }
-}
 
 
 
@@ -413,10 +262,76 @@ void handle_end_state(Client *client) {
     exit (0);
 }
 
+void handle_udp_accept_state(Client *client) {
+    char buffer[1024];
+    struct sockaddr_in cli_addr;
+    socklen_t cli_len = sizeof(cli_addr);
+    int bytes_received;
+
+
+    bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&cli_addr, &cli_len);
+    if (bytes_received < 0) {
+        perror("recvfrom failed");
+        client->state = ERROR_STATE;
+        return;
+    }
+
+
+
+    int offset = 0;
+    uint8_t message_type = buffer[offset++];
+    uint16_t message_id = (buffer[offset] << 8) | buffer[offset + 1];
+    offset += 2;
+
+    char username[100], display_name[100], secret[100];
+    int current_pos = 0;
+
+
+    strcpy(username, buffer + offset);
+    current_pos = strlen(username) + 1;
+    offset += current_pos;
+
+
+    strcpy(display_name, buffer + offset);
+    current_pos = strlen(display_name) + 1;
+    offset += current_pos;
+
+
+    strcpy(secret, buffer + offset);
+
+
+    printf("Received message details:\n");
+    printf("Message Type: %u\n", message_type);
+    printf("Message ID: %u\n", message_id);
+    printf("Username: %s\n", username);
+    printf("Display Name: %s\n", display_name);
+    printf("Secret: %s\n", secret);
+
+
+    if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
+
+        strcpy(client->username, username);
+        strcpy(client->secret, secret);
+        strcpy(client->displayName, display_name);
+
+
+        client->state = AUTH_STATE;
+
+
+        char response[] = "Authentication successful";
+        sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&cli_addr, cli_len);
+    } else {
+        client->state = ERROR_STATE;
+        char response[] = "Authentication failed";
+        sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&cli_addr, cli_len);
+    }
+}
+
 
 void* client_handler(void* arg) {
     thread_arg* t_arg = (thread_arg*) arg;
     int client_sock = t_arg->sockfd;
+    int protocol = t_arg->protocol;
     free(arg);
 
     Client client;
@@ -425,25 +340,48 @@ void* client_handler(void* arg) {
     memset(client.buffer, 0, BUFFER_SIZE);
 
     while (client.state != END_STATE) {
-        switch (client.state) {
-            case ACCEPT_STATE:
-                handle_accept_state(&client);
-                break;
-            case AUTH_STATE:
-                handle_auth_state(&client);
-                break;
-            case OPEN_STATE:
-                handle_open_state(&client);
-                break;
-            case ERROR_STATE:
-                handle_error_state(&client);
-                break;
-            case END_STATE:
-                handle_end_state(&client);
-                break;
-            default:
-                printf("Unknown state\n");
-                client.state = END_STATE;
+        if (protocol == 0) {  // TCP
+            switch (client.state) {
+                case ACCEPT_STATE:
+                    handle_accept_state(&client);
+                    break;
+                case AUTH_STATE:
+                    handle_auth_state(&client);
+                    break;
+                case OPEN_STATE:
+                    handle_open_state(&client);
+                    break;
+                case ERROR_STATE:
+                    handle_error_state(&client);
+                    break;
+                case END_STATE:
+                    handle_end_state(&client);
+                    break;
+                default:
+                    printf("Unknown TCP state\n");
+                    client.state = END_STATE;
+            }
+        } else if (protocol == 1) {  // UDP
+            switch (client.state) {
+                case ACCEPT_STATE:
+                 handle_udp_accept_state(&client);
+                    break;
+                case AUTH_STATE:
+                  //  handle_udp_auth_state(&client);
+                    break;
+                case OPEN_STATE:
+                   // handle_udp_open_state(&client);
+                    break;
+                case ERROR_STATE:
+                    //handle_udp_error_state(&client);
+                    break;
+                case END_STATE:
+                    //handle_udp_end_state(&client);
+                    break;
+                default:
+                    printf("Unknown UDP state\n");
+                    client.state = END_STATE;
+            }
         }
     }
     close(client.fd);
@@ -452,14 +390,22 @@ void* client_handler(void* arg) {
 
 
 
-void FSM_function() {
+
+void FSM_function(void) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        perror("ERROR opening socket");
+        perror("ERROR opening TCP socket");
+        exit(1);
+    }
+    int udp_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_sockfd < 0) {
+        perror("ERROR opening UDP socket");
         exit(1);
     }
 
-    struct sockaddr_in serv_addr;
+
+    struct sockaddr_in serv_addr, cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = inet_addr(config.server_ip);
@@ -469,35 +415,66 @@ void FSM_function() {
         perror("ERROR on binding");
         exit(1);
     }
+    if (bind(udp_sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("ERROR on binding UDP");
+        close(udp_sockfd);
+        exit(1);
+    }
 
     listen(sockfd, MAX_CLIENTS);
+    fd_set readfds;
+    int max_fd;
 
     while (serverRunning) {
-        struct sockaddr_in cli_addr;
-        socklen_t clilen = sizeof(cli_addr);
-        int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-        if (newsockfd < 0) {
-            perror("ERROR on accept");
-            if (errno == EINTR)
-                break;
-            continue;
+
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds); // Для TCP
+        FD_SET(udp_sockfd, &readfds); // Для UDP
+
+        max_fd = (sockfd > udp_sockfd) ? sockfd : udp_sockfd;
+
+        int activity = select(max_fd + 1, &readfds, NULL, NULL, NULL);
+
+        if ((activity < 0) && (errno != EINTR)) {
+            printf("Select error");
         }
 
-        pthread_t thread_id;
-        thread_arg *arg = malloc(sizeof(thread_arg));
-        if (arg == NULL) {
-            perror("Failed to allocate memory for thread arg");
-            close(newsockfd);
-            continue;
-        }
-        arg->sockfd = newsockfd;
 
-        if (pthread_create(&thread_id, NULL, client_handler, (void*) arg) != 0) {
-            perror("Failed to create thread");
-            free(arg);
-            close(newsockfd);
+        if (FD_ISSET(sockfd, &readfds)) {
+            int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+            if (newsockfd < 0) {
+                perror("ERROR on accept");
+                continue;
+            }
+            pthread_t thread_id;
+            thread_arg *arg = malloc(sizeof(thread_arg));
+            arg->sockfd = newsockfd;
+            arg->protocol = 0; // TCP
+            if (pthread_create(&thread_id, NULL, client_handler, (void*) arg) != 0) {
+                perror("Failed to create thread");
+                free(arg);
+                close(newsockfd);
+            }
+            pthread_detach(thread_id);
         }
-        pthread_detach(thread_id);
+
+        if (FD_ISSET(udp_sockfd, &readfds)) {
+
+            pthread_t thread_id;
+            thread_arg *arg = malloc(sizeof(thread_arg));
+            arg->sockfd = udp_sockfd;
+            arg->protocol = 1; // UDP
+
+
+            if (pthread_create(&thread_id, NULL, client_handler, (void*) arg) != 0) {
+                perror("Failed to create thread");
+                free(arg);
+                close(udp_sockfd);
+            }
+            pthread_detach(thread_id);
+        }
+
+
     }
     close(sockfd);
 }
@@ -524,11 +501,9 @@ int main(int argc, char *argv[]){
         exit(EXIT_FAILURE);
     }
 
-
     FSM_function();
 
     return 0;
-
 
 }
 
