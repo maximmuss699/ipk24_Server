@@ -1,255 +1,57 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <poll.h>
-#include <search.h>
-#include <ctype.h>
-#include <errno.h>
-#include <signal.h>
-#include <netdb.h>
-#include <pthread.h>
 #include "validation.h"
 #include "cli.h"
 #include "channels.h"
 #include "client.h"
+#include "tcp_client_handler.h"
 
 
 
 typedef struct {
     int sockfd;
     int protocol;
+    struct sockaddr_in addr; // Client address
+    socklen_t addr_len;      // Length of client address
 } thread_arg;
 
 
 
+typedef struct {
+    State state;                        // Current state of the client
+    char buffer[BUFFER_SIZE];           // Buffer to hold incoming data
+    char username[MAX_USERNAME_LENGTH]; // Username for the client
+    char channel[MAX_CHANNEL_ID_LENGTH];// Channel the client is subscribed to
+    char secret[MAX_SECRET_LENGTH];     // Secret/password for authentication
+    char displayName[MAX_DISPLAY_NAME_LENGTH]; // Display name of the client
+    struct sockaddr_in addr;            // Client's address
+    socklen_t addr_len;                 // Length of the client's address
+    int sockfd;                         // Socket file descriptor
+    pthread_t thread_id;                // Thread ID for the client
+} UDPClient;
 
-#define BUFFER_SIZE 1024
-#define MAX_USERNAME_LENGTH 20
-#define MAX_SECRET_LENGTH 128
-#define MAX_DISPLAY_NAME_LENGTH 20
-#define MAX_CHANNEL_ID_LENGTH 20
-#define MAX_CHANNELS 10 // Maximum number of channels
-#define MAX_CLIENTS 10 // Maximum number of simultaneous clients
-#define POLL_TIMEOUT 2000000 // Timeout for poll in milliseconds
-#define DEFAULT_CHANNEL "default"
+
+#define MAX_UDP_CLIENTS 100
+UDPClient udpClients[MAX_UDP_CLIENTS];
+int udpClientCount = 0;
+pthread_mutex_t udpClientMutex = PTHREAD_MUTEX_INITIALIZER;
+
 
 volatile sig_atomic_t serverRunning = 1;
-
 uint16_t messageID = 0x0000;
+
+void cleanup_udp_sessions(void) {
+    pthread_mutex_lock(&udpClientMutex);
+    // Perform cleanup
+    pthread_mutex_unlock(&udpClientMutex);
+}
 
 void signalHandler(int signum) {
     serverRunning = 0;
-}
-
-void log_message(const char* prefix, int fd, const char* message) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-    if (getpeername(fd, (struct sockaddr *)&addr, &addr_len) == -1) {
-        perror("getpeername failed");
-        return;
-    }
-
-    char clientIP[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &addr.sin_addr, clientIP, INET_ADDRSTRLEN);
-    int clientPort = ntohs(addr.sin_port);
-
-    printf("%s %s:%d | %s", prefix, clientIP, clientPort, message);
+    cleanup_udp_sessions();
 }
 
 
 
-void handle_accept_state(Client *client) {
-    char response[1024];
-    char response2[1024];
-    int recv_auth = 0;
 
-
-    while (recv_auth == 0) {
-        int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
-        if (recv_len < 0) {
-            perror("Error receiving data");
-
-        }
-
-
-        client->buffer[recv_len] = '\0';
-        if (strncmp(client->buffer, "AUTH ", 5) == 0) {
-            int args_count = sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, client->displayName);
-            if (args_count == 3 && Check_username(client->username) && Check_secret(client->secret) && Check_Displayname(client->displayName)){
-                log_message("RECV", client->fd, client->buffer);
-                snprintf(response, sizeof(response), "REPLY OK IS Auth success.\r\n");
-                send(client->fd, response, strlen(response), 0);
-                sleep(1);
-                log_message("SENT", client->fd, response);
-                get_or_create_channel(DEFAULT_CHANNEL);
-                join_channel(client, DEFAULT_CHANNEL);
-                snprintf(response2, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, DEFAULT_CHANNEL);
-                send(client->fd, response2, strlen(response2), 0);
-                log_message("SENT", client->fd, response2);
-                sleep(1);
-                broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), response2, client);
-                recv_auth = 1;
-                client->state = OPEN_STATE;
-            } else {
-                log_message("RECV", client->fd, client->buffer);
-                snprintf(response, sizeof(response), "REPLY NOK IS Auth success.\r\n");
-                send(client->fd, response, strlen(response), 0);
-                log_message("SENT", client->fd, response);
-                recv_auth = 1;
-                client->state = AUTH_STATE;
-            }
-
-        }
-
-
-    }
-}
-
-
-void handle_auth_state(Client *client) {
-    char response[1024];
-    char response2[1024];
-    int recv_auth = 0;
-    while(recv_auth == 0){
-        int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
-        if (recv_len < 0) {
-            perror("Error receiving data");
-
-        }
-
-        client->buffer[recv_len] = '\0';
-        if (strncmp(client->buffer, "AUTH ", 5) == 0) {
-            int args_count = sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret, client->displayName);
-            if (args_count == 3 && Check_username(client->username) && Check_secret(client->secret) && Check_Displayname(client->displayName)){
-                log_message("RECV", client->fd, client->buffer);
-                snprintf(response, sizeof(response), "REPLY OK IS Auth success.\r\n");
-                send(client->fd, response, strlen(response), 0);
-                sleep(1);
-                log_message("SENT", client->fd, response);
-                get_or_create_channel(DEFAULT_CHANNEL);
-                join_channel(client, DEFAULT_CHANNEL);
-                snprintf(response2, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, DEFAULT_CHANNEL);
-                send(client->fd, response2, strlen(response2), 0);
-                log_message("SENT", client->fd, response2);
-                sleep(1);
-                broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), response2, client);
-                recv_auth = 1;
-                client->state = OPEN_STATE;
-            } else {
-                log_message("RECV", client->fd, client->buffer);
-                snprintf(response, sizeof(response), "REPLY NOK IS Auth success.\r\n");
-                send(client->fd, response, strlen(response), 0);
-                log_message("SENT", client->fd, response);
-            }
-
-        }
-
-
-    }
-
-
-}
-
-void handle_open_state(Client *client) {
-    char command[10];
-    char response[1024];
-    char messageContent[BUFFER_SIZE];
-    char channelID[MAX_CHANNEL_ID_LENGTH];
-    char displayName[MAX_DISPLAY_NAME_LENGTH];
-
-
-    while (client->state == OPEN_STATE) {
-        int recv_len = recv(client->fd, client->buffer, BUFFER_SIZE - 1, 0);
-        if (recv_len < 0) {
-            perror("Error receiving data");
-            client->state = ERROR_STATE;
-            continue;
-        }
-
-        client->buffer[recv_len] = '\0';
-        sscanf(client->buffer, "%s", command);
-
-        if (strcmp(command, "JOIN") == 0) {
-            if (sscanf(client->buffer, "JOIN %s AS %s", channelID, displayName) == 2) {
-
-                if (client->channel[0] != '\0') {
-                    leave_channel(client);
-                }
-                strncpy(client->channel, channelID, MAX_CHANNEL_ID_LENGTH - 1);
-                client->channel[MAX_CHANNEL_ID_LENGTH - 1] = '\0';
-                strncpy(client->displayName, displayName, MAX_DISPLAY_NAME_LENGTH - 1);
-                client->displayName[MAX_DISPLAY_NAME_LENGTH - 1] = '\0';
-
-                    log_message("RECV", client->fd, client->buffer);
-                    send(client->fd, "REPLY OK IS Join success.\r\n", 28, 0);
-                    sleep(1);
-                    log_message("SENT", client->fd, client->buffer);
-                    snprintf(response, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, client->channel);
-                    send (client->fd, response, strlen(response), 0);
-                    sleep(1);
-                    log_message("SENT", client->fd, response);
-
-
-
-                char currentChannel[MAX_CHANNEL_ID_LENGTH];
-                strncpy(currentChannel, client->channel, MAX_CHANNEL_ID_LENGTH);
-                if (join_channel(client, currentChannel) != 0) {
-                    fprintf(stderr, "Error joining channel\n");
-                }
-                    broadcast_message(get_or_create_channel(client->channel), response, client);
-                sleep(1);
-            } else {
-                send(client->fd, "ERR FROM Server IS Invalid JOIN format\r\n", 40, 0);
-                sleep(1);
-            }
-        } else if (strcmp(command, "MSG") == 0) {
-            if (sscanf(client->buffer, "MSG FROM %s IS %[^\r\n]", client->displayName, messageContent) == 2) {
-                log_message("RECV", client->fd, client->buffer);
-                broadcast_message(get_or_create_channel(client->channel), client->buffer, client);
-                sleep(1);
-            } else {
-                send(client->fd, "ERR FROM Server IS Invalid MSG format\r\n", 38, 0);
-                sleep(1);
-            }
-        } else if (strcmp(client->buffer, "BYE\r\n") == 0) {
-            printf("Server received BYE\n");
-            send(client->fd, "BYE\r\n", 5, 0);
-            client->state = END_STATE;
-        }  else if(strcmp(command, "ERR") == 0){
-            if ((sscanf(client->buffer, "ERR FROM %s IS %[^\r\n]", client->displayName, messageContent) == 2)){
-                log_message("RECV", client->fd, client->buffer);
-                client->state = ERROR_STATE;
-            }else{
-                printf("ERROR IN ERR COMMAND FROM CLIENT\n");
-            }
-
-        }
-        else {
-            log_message("RECV", client->fd, client->buffer);
-            printf("Invalid command FROM CLIENT\n");
-            client->state = ERROR_STATE;
-
-        }
-    }
-}
-
-
-void handle_error_state(Client *client) {
-    const char* byeMsg = "BYE\r\n";
-    send(client->fd, byeMsg, strlen(byeMsg), 0);
-    client->state = END_STATE;
-}
-
-void handle_end_state(Client *client) {
-
-    close(client->fd);
-    client->fd = -1;
-    exit (0);
-}
 
 void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uint8_t result, const char *message_contents, uint16_t ref_message_id) {
     unsigned char buffer[1024];
@@ -317,26 +119,19 @@ void send_confirm(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, u
     if (sendto(sockfd, buffer, offset, 0, (struct sockaddr *)cli_addr, cli_len) < 0) {
         perror("Failed to send confirm");
     } else {
-        printf("Confirm sent successfully\n");
+        printf("Confirm sent successfully in state \n");
     }
 
 
 }
 
 
-
-void handle_udp_accept_state(Client *client) {
-    char buffer[1024];
-    struct sockaddr_in cli_addr;
-    socklen_t cli_len = sizeof(cli_addr);
-    int bytes_received;
-
+void handle_udp_accept_state(UDPClient *client) {
     struct pollfd fds;
-    fds.fd = client->fd;
+    fds.fd = client->sockfd;
     fds.events = POLLIN;
 
     while(client->state == ACCEPT_STATE) {
-
         int ret = poll(&fds, 1, POLL_TIMEOUT);
         if (ret < 0) {
             perror("Poll failed");
@@ -347,76 +142,54 @@ void handle_udp_accept_state(Client *client) {
             continue;
         }
 
-        if (fds.revents & POLLIN) // If there is data to read
-        {
-            bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &cli_addr, &cli_len);
+        if (fds.revents & POLLIN) {
+            memset(client->buffer, 0, BUFFER_SIZE);
+            int bytes_received = recvfrom(client->sockfd, client->buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client->addr, &client->addr_len);
             if (bytes_received < 0) {
                 perror("ACCEPT recvfrom failed");
                 client->state = ERROR_STATE;
                 return;
             }
-            uint16_t receivedMessageID = (buffer[1] << 8) | buffer[2];
 
-            send_confirm(client->fd, &cli_addr, cli_len, receivedMessageID);
+            uint16_t receivedMessageID = (client->buffer[1] << 8) | client->buffer[2];
+            send_confirm(client->sockfd, &client->addr, client->addr_len, receivedMessageID);
 
-
-            //  size_t offset = 0;
-            size_t offset1 = 0;
-            //uint8_t message_type = buffer[offset++];
-            offset1 += 2;
-
+            size_t offset1 = 3;  // Adjusting the starting position after message type and ID
             char username[100], display_name[100], secret[100];
-            int current_pos = 0;
-            strcpy(username, buffer + offset1);
-            current_pos = strlen(username) + 1;
-            offset1 += current_pos;
+            strcpy(username, client->buffer + offset1);
+            offset1 += strlen(username) + 1;
+            strcpy(display_name, client->buffer + offset1);
+            offset1 += strlen(display_name) + 1;
+            strcpy(secret, client->buffer + offset1);
 
-
-            strcpy(display_name, buffer + offset1);
-            current_pos = strlen(display_name) + 1;
-            offset1 += current_pos;
-            strcpy(secret, buffer + offset1);
-
-            if (buffer[0] == 0x02) {
+            if (client->buffer[0] == 0x02) {
                 if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
                     strcpy(client->username, username);
                     strcpy(client->secret, secret);
                     strcpy(client->displayName, display_name);
+                    printf("Transitioning from ACCEPT_STATE to OPEN_STATE\n");
                     client->state = OPEN_STATE;
-                    send_reply(client->fd, &cli_addr, cli_len, 1, "Authentication successful", receivedMessageID);
-
-
+                    send_reply(client->sockfd, &client->addr, client->addr_len, 1, "Authentication successful", receivedMessageID);
                 } else {
                     client->state = ERROR_STATE;
                     char response[] = "Authentication failed";
-                    sendto(client->fd, response, strlen(response), 0, (struct sockaddr *) &cli_addr, cli_len);
+                    sendto(client->sockfd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
                 }
             } else {
-                client->state = ERROR_STATE;
                 char response[] = "Authentication failed";
-                sendto(client->fd, response, strlen(response), 0, (struct sockaddr *) &cli_addr, cli_len);
-
+                sendto(client->sockfd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
             }
         }
     }
 }
 
-void handle_udp_open_state(Client *client){
-    char buffer[1024];
-    struct sockaddr_in cli_addr;
-    socklen_t cli_len = sizeof(cli_addr);
-    int bytes_received;
-    char channelID[MAX_CHANNEL_ID_LENGTH];
-    char displayName[MAX_DISPLAY_NAME_LENGTH];
-    messageID += 0x0001;
+void handle_udp_open_state(UDPClient *client){
     struct pollfd fds;
-    fds.fd = client->fd;
+    fds.fd = client->sockfd;
     fds.events = POLLIN;
 
     while(client->state == OPEN_STATE) {
         printf("OPEN STATE\n");
-        //printf("%s\n", client->state);
-        printf("Actual client state %d\n", client->state);
 
         int ret = poll(&fds, 1, POLL_TIMEOUT);
         if (ret < 0) {
@@ -427,22 +200,22 @@ void handle_udp_open_state(Client *client){
             printf("Timeout occurred, no data received.\n");
             continue;
         }
-        if (fds.revents & POLLIN) // If there is data to read
-        {
 
-            bytes_received = recvfrom(client->fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &cli_addr, &cli_len);
+        if (fds.revents & POLLIN) {  // If there is data to read
+            memset(client->buffer, 0, BUFFER_SIZE);
+            int bytes_received = recvfrom(client->sockfd, client->buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client->addr, &client->addr_len);
             if (bytes_received < 0) {
                 perror("recvfrom failed");
                 client->state = ERROR_STATE;
                 return;
             }
 
-            uint16_t receivedMessageID = ntohs(*(uint16_t *) (buffer + 1));
-            uint8_t messageType = buffer[0];
-            char *displayName = buffer + 3;
+            uint16_t receivedMessageID = ntohs(*(uint16_t *)(client->buffer + 1));
+            uint8_t messageType = client->buffer[0];
+            char *displayName = client->buffer + 3;
             char *messageContent = displayName + strlen(displayName) + 1;
-
-            send_confirm(client->fd, &cli_addr, cli_len, receivedMessageID);
+            printf("State is %d\n", client->state);
+            send_confirm(client->sockfd, &client->addr, client->addr_len, receivedMessageID);
 
             switch (messageType) {
                 case 0x03:  // JOIN
@@ -457,16 +230,13 @@ void handle_udp_open_state(Client *client){
 
                 default:
                     printf("Unknown message type received: %d\n", messageType);
-                    //send_error_reply(client->fd, &cli_addr, cli_len, "Invalid message type", receivedMessageID);
+                    //send_error_reply(client->sockfd, &client->addr, client->addr_len, "Invalid message type", receivedMessageID);
                     break;
             }
-
-
         }
-
     }
-
 }
+
 
 
 
@@ -482,7 +252,7 @@ void* client_handler(void* arg) {
     memset(client.buffer, 0, BUFFER_SIZE);
 
     while (client.state != END_STATE  && serverRunning) {
-        if (protocol == 0) {  // TCP
+
             switch (client.state) {
                 case ACCEPT_STATE:
                     handle_accept_state(&client);
@@ -507,37 +277,109 @@ void* client_handler(void* arg) {
             if (!serverRunning) {
                 break; // Break the loop to start cleanup
             }
-            } else if (protocol == 1) {  // UDP
-            switch (client.state) {
-                case ACCEPT_STATE:
-                    handle_udp_accept_state(&client);
-                    break;
-                case AUTH_STATE:
-                  //  handle_udp_auth_state(&client);
-                    printf("UDP AUTH STATE\n");
-                    close(client.fd);
-                    exit(1);
-                    break;
-                case OPEN_STATE:
-                    handle_udp_open_state(&client);
-                    break;
-                case ERROR_STATE:
-                    //handle_udp_error_state(&client);
-                    break;
-                case END_STATE:
-                    //handle_udp_end_state(&client);
-                    break;
-                default:
-                    printf("Unknown UDP state\n");
-                    client.state = END_STATE;
-            }
-            if (!serverRunning) {
-                break; // Break the loop to start cleanup
-            }
-        }
+
     }
     close(client.fd);
     return NULL;
+}
+
+
+void* udp_client_handler(void* arg) {
+    UDPClient *client = (UDPClient *)arg;
+    printf("UDP client handler started\n");
+    printf("Client state: %d\n", client->state);
+    printf("Client buffer: %s\n", client->buffer);
+
+    while (client->state != END_STATE && serverRunning) {
+        switch (client->state) {
+            case ACCEPT_STATE:
+                handle_udp_accept_state(client);
+                break;
+            case AUTH_STATE:
+               // handle_auth_state(client);  // Assuming UDP can use a similar auth handler
+                break;
+            case OPEN_STATE:
+                handle_udp_open_state(client);
+                break;
+            case ERROR_STATE:
+              //  handle_error_state(client);
+                break;
+            case END_STATE:
+             //   handle_end_state(client);
+                break;
+            default:
+                printf("Unknown UDP state\n");
+                client->state = END_STATE;
+        }
+        if (!serverRunning) {
+            break;  // Break the loop to start cleanup
+        }
+    }
+    close(client->sockfd);
+    client->sockfd = -1;
+    free(client);  // Ensure to free the allocated memory for the client
+    return NULL;
+}
+
+
+
+int find_or_create_udp_session(int udp_sockfd, struct sockaddr_in *addr, socklen_t len) {
+    pthread_mutex_lock(&udpClientMutex);
+    for (int i = 0; i < udpClientCount; i++) {
+        if (udpClients[i].addr_len == len && memcmp(&udpClients[i].addr, addr, len) == 0) {
+            return i; // Session found
+        }
+    }
+
+    // Create new session if possible
+    if (udpClientCount < MAX_UDP_CLIENTS) {
+        UDPClient *client = &udpClients[udpClientCount++];
+        client->addr = *addr;
+        client->addr_len = len;
+        client->state = ACCEPT_STATE;
+        client->sockfd = udp_sockfd;  // Storing the socket descriptor if needed for sending
+        pthread_mutex_unlock(&udpClientMutex);
+        return udpClientCount - 1;
+    }
+    pthread_mutex_unlock(&udpClientMutex);
+
+    return -1; // No space for more clients
+}
+
+void handle_udp_packet(int udp_sockfd) {
+    struct sockaddr_in cli_addr;
+    socklen_t cli_len = sizeof(cli_addr);
+    char buffer[BUFFER_SIZE];
+    int bytes_received = recvfrom(udp_sockfd, buffer, sizeof(buffer), 0, (struct sockaddr *)&cli_addr, &cli_len);
+    if (bytes_received < 0) {
+        perror("recvfrom failed");
+        return;
+    }
+    printf("Received UDP packet from %s:%d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
+
+
+    // Check if this client is known
+    int clientIndex = find_or_create_udp_session(udp_sockfd, &cli_addr, cli_len);
+    if (clientIndex < 0) {
+        fprintf(stderr, "Failed to handle new UDP client");
+        return;
+    }
+    UDPClient *client = &udpClients[clientIndex];
+    memcpy(client->buffer, buffer, bytes_received);
+
+    // If new session, start a new thread
+    if (pthread_equal(client->thread_id, pthread_self()) || client->thread_id == 0) {
+        // If no thread is running, start a new thread
+        if (pthread_create(&client->thread_id, NULL, udp_client_handler, client) != 0) {
+            perror("Failed to create thread for new UDP client");
+        } else {
+            pthread_detach(client->thread_id);
+        }
+    } else {
+        // If a thread is already running, update data (could use a condition variable or another synchronization mechanism here)
+        // Signal to the existing thread that new data has arrived (not implemented here)
+        printf("Thread already running for this client. Updated data in buffer.\n");
+    }
 }
 
 
@@ -615,19 +457,8 @@ void FSM_function(void) {
         }
 
         if (FD_ISSET(udp_sockfd, &readfds)) {
+            handle_udp_packet(udp_sockfd);
 
-            pthread_t thread_id;
-            thread_arg *arg = malloc(sizeof(thread_arg));
-            arg->sockfd = udp_sockfd;
-            arg->protocol = 1; // UDP
-
-
-            if (pthread_create(&thread_id, NULL, client_handler, (void*) arg) != 0) {
-                perror("Failed to create thread");
-                free(arg);
-                close(udp_sockfd);
-            }
-            pthread_detach(thread_id);
         }
 
 

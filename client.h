@@ -2,14 +2,30 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <poll.h>
+#include <search.h>
+#include <ctype.h>
+#include <errno.h>
+#include <signal.h>
+#include <netdb.h>
+#include <pthread.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_USERNAME_LENGTH 20
 #define MAX_SECRET_LENGTH 128
 #define MAX_DISPLAY_NAME_LENGTH 20
 #define MAX_CHANNEL_ID_LENGTH 20
+#define MAX_CHANNELS 10 // Maximum number of channels
+#define MAX_CLIENTS 10 // Maximum number of simultaneous clients
+#define POLL_TIMEOUT 2000000 // Timeout for poll in milliseconds
+#define DEFAULT_CHANNEL "default"
 
 typedef enum {
     ACCEPT_STATE,

@@ -1,7 +1,7 @@
 #include "channels.h"
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h> // for sleep function
+
 
 // Global array of channels
 static Channel channels[MAX_CHANNELS];
@@ -75,8 +75,13 @@ int join_channel(Client *client, const char* channelName) {
 void broadcast_message(Channel *channel, const char *message, Client *sender) {
     for (int i = 0; i < channel->clientCount; i++) {
         Client *client = channel->clients[i];
-        if (client != sender) {
-            send(client->fd, message, strlen(message), 0);
+        if (client && client != sender && client->channel[0] != '\0' && client->fd > 0) {
+            if (send(client->fd, message, strlen(message), 0) == -1) {
+                perror("send failed");
+                close(client->fd);
+                client->fd = -1;
+
+            }
         }
     }
 }
