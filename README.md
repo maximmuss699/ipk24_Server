@@ -2,7 +2,7 @@
 
 ## Description
 
-This project develops a server application, which is capable to communicate with remote clients using `IPK24-CHAT` protocol. The server is capable of managing multiple client connections, supporting two transport protocols: TCP and UDP. 
+This project develops a server application, which is capable to communicate with remote clients using `IPK24-CHAT` protocol [Project1]. The server is capable of managing multiple client connections, supporting two transport protocols: TCP [RFC9293] and UDP [RFC768]. 
 
 The server is built to handle key functionalities including client authentication, channel management, and message broadcasting among connected clients. Implemented in C and uses socket API for network communications.  Behvaior of the server is described in the FSM diagram below.
 
@@ -23,7 +23,7 @@ The IPK24-CHAT protocol is designed to implement client-server communication for
 
 #### Message Types
 
-Below are the different types of messages used in the IPK24-CHAT protocol:
+Below are the different types of messages used in the IPK24-CHAT protocol[Project1]:
 
 | Message Type |  Description |
 |--------------|-------------|
@@ -47,7 +47,7 @@ The IPK24-CHAT protocol defines the following operations for client-server commu
 
 ## Usage
 ```bash
-./ipk24server -l <IP address> -p <port> -d <timeout> -r <retries> -h 
+./ipk24chat-server -l <IP address> -p <port> -d <timeout> -r <retries> -h 
 ```
 
 
@@ -60,83 +60,149 @@ Options:
 -h                 Display this help message and exit.
 ```
 ## Implementation
-
+This section describes how the server manage multiple client connections simultaneously using TCP and UDP protocols.
 
 ### Main function
+The main function first parses the command line arguments with the `getopt()` function. Check if the arguments are valid and then initializes the server with the provided IP address and port number. The server then enters the main loop, where uses `select()` to handle incoming TCP connection requests, TCP client data, and UDP packets.
+. It uses `poll` and threads to manage parallel connections efficiently. 
+
+
+### TCP Client Management
+When a TCP client connects, the server sets up a dedicated socket for this specific interaction. Then it uses a separate thread to handle the client.
+As data comes in from the client, the server processes it based on the current state of the client.
+For handling TCP clients was made `Client` structure, which contains the client's socket, state, buffer, channel and other information about the client. 
+
+The main FSM logic for TCP clients was implemented in the `tcp_client_handler.c` file. Here you also can find `log_message()`function for logging server input/output. 
+
+For channel management it uses functions from `channels.c` file. When the Client firstly authorizes, it joins the default channel and then can switch between channels.
+After authorization the Server added the client to the default channel using `join_channel()` function and sends a broadcast message to the channel using `broadcast_message()` function.
+### UDP Client Management
+
+
+### Channel Management
+All channel management functions are implemented in the `channels.c` file. There are functions like `join_channel()`, `leave_channel()`, `get_or_create_channel()` and `broadcast_message()`. 
+
+`Broadcast_message()` function uses `for` loop to send the message to all clients in the channel. It sends the message to all clients except the sender and uses the `send()` function to send the message to the every client's socket in this channel.
 
 
 
-### TCP client
-The TCP client first creates a socket with the `socket()` function. The client then finds the server with the `gethostbyname()` function and creates a structure `server` with the server's IP address and port number. The client then connects to the server with the `connect()` function.
-Then the client operates in a loop. First, it gets input from the user with the `fgets()` function. The input is sent to the server with the `send()` function. The client then waits for a response from the server with the `recv()` function. The response is printed to the user. The loop have the same states as FSM diagram above. The client can be terminated by pressing `Ctrl+C`, which closes the socket, thus terminating the connection, and exits the program.
+### Graceful connection termination
+The server can handle client disconnections gracefully. When a client sends a `BYE` message, the server removes the client from the channel and closes the client's socket. The server then frees the memory allocated for the client structure and exits the client thread.
 
-For handling responses from the server in the TCP mode was implemented `handle_response()` function. The function parse the response from the server and prints the appropriate message to the user. Also this function return integer value, which is used to determine if the client should continue in the loop or go to other state.
-
-To handle input from a network socket and standard input (stdin) without blocking the program's execution was used `POLL`.
-Setup of `POLL` involves:
-1. Creating a `struct pollfd` array with two elements, one for the network socket and one for stdin.
-2. Setting the `fd` field of the network socket element to the socket file descriptor.
-3. Setting the `events` field of the network socket element to `POLLIN`.
-4. Setting the `fd` field of the stdin element to `0`.
-5. Setting the `events` field of the stdin element to `POLLIN`.
-
-`POLL` is called inside of the loop and waiting for the response from the server or input from the user. If the response is received, the `handle_response()` function is called. If the user inputs something, the input is sent to the server.
-
-To find the server was used `gethosbyname()` function. The function returns a pointer to a `struct hostent` structure, which contains information about the server. The `struct hostent` structure contains the server's IP address and port number.
-
-### UDP client
-The UDP client use the same structure as the TCP client. The client first creates a socket with the `socket()` function. The client then finds the server with the `gethostbyname()` function and creates a structure `server` with the server's IP address and port number.
-UDP client use FSM logic to switch between states.
-
-For checking stdin messages from user were implemented functions like `Check_username()` and others.
-
-For avoiding packet duplication was used MessageID. MessageID is converting in network order using `htons()` function: `uint16_t networkOrderMessageID = htons(messageID)`.
-
-
-For packet loss was implemented retransmission of the packet. The client sends the packet and waits for the response. If the response is not received within the timeout, the client resends the packet. The client resends the packet up to the maximum number of retries. If the response is not received after the maximum number of retries, the client return `ERROR_STATE`.
-To avoid packet loss was implemented function `wait_confirm()`, which waits for the response from the server. The function uses `POLL` to wait for the response. If the response is received, the function returns  0. If the response is not received within the timeout, the function returns 1.
-
-
-### Hostname Resolution
-The client supports connecting to the server using a hostname, thanks to the `gethostbyname()` function for IPv4. This function resolves the server's hostname to its IP address, enabling the client to establish connections without requiring the server's IP address directly.
-
-### Graceful Shutdown
-The client is designed to terminate gracefully in response to an interrupt signal (e.g., Ctrl+C). Upon receiving the signal, the client closes the socket, ensuring a proper shutdown of the connection with the server. For the implementation of signal handling was used `signal()` function.
 ### Error handling
-Robust error and signal handling mechanisms are integral to the client's design. The client can handle various errors, such as invalid command-line arguments, connection failures, and data transmission errors, providing appropriate feedback to the user.
-
-
+When the server receives the `ERR` message from the client it try to gracefully close the connection and free the memory allocated for the client structure. Server and Client sends `BYE` message to each other and then close the connection.
 
 ## Testing
-For testing the ipk24-chat client, two methods were used, tailored to TCP and UDP protocols respectively. Testing was made manually by running the client and server on separate terminals and observing the interaction between them.
-The client was tested on macos and linux operating systems.
-### TCP Testing
-TCP was testing using netcat utility. The server was started with the following command:
+The server was tested using both TCP and UDP protocols. It was tested with multiple clients connecting simultaneously and sending messages to each other. And also was tested with different scenarios, including successful and failed client authentication, joining and leaving channels, and sending messages.
+### TCP clients testing
+TCP clients were tested using the server from [1]. The server was started with the following command:
 ```bash
-nc -4 -c -l -v 127.0.0.1 4567
+./ipk24chat-server -l 127.0.0.1 -p 4567
 ```
 The client was started with the following command:
 ```bash
 ./ipk24chat-client -t tcp -s 127.0.0.1 -p 4567
 ```
-#### Examples of the client input and output are shown below:
+#### Examples of client and server outputs are shown below:
+`Simple conversation of one TCP client`:
+
+Client output:
 ```bash
-/auth username secret Display_Name
+/auth user secret TIM
 Success: Auth success.
-Display_Name: Hello
-Server: Hello
-Display_Name: bye
-```
-```bash
-/auth Tom secret Tomik
-Success: Auth success.
-Tomik: Hello
-Server: Hello
-/join channel22
+Server: TIM has joined default.
+TIM: Hello
+/join channel2
 Success: Join success.
-Server: Tomik has joined channel22.
-Tomik: Bye
+Server: TIM has joined channel2.
+TIM: Bye
 ```
+Server output:
+```bash
+RECV 127.0.0.1:51109 | AUTH Username=user DisplayName=TIM Secret=secret
+SENT 127.0.0.1:51109 | REPLY Reply=OK MessageContent=Auth success.
+SENT 127.0.0.1:51109 | MSG DisplayName=Server MessageContent=TIM has joined default.
+RECV 127.0.0.1:51109 | MSG DisplayName=TIM MessageContent=Hello
+RECV 127.0.0.1:51109 | JOIN ChannelID=channel2 DisplayName=TIM
+SENT 127.0.0.1:51109 | REPLY Reply=OK MessageContent=Join success.
+RECV 127.0.0.1:51109 | MSG DisplayName=TIM MessageContent=Bye
+RECV 127.0.0.1:51109 | BYE 
+
+```
+
+`Simple conversation of two TCP clients`:
+
+Clients output:    
+```bash
+/auth user1 secret1 MAX            /auth user2 secret TOM
+Success: Auth success.             Success: Auth success.
+Server: MAX has joined default.    Server: TOM has joined default.
+Server: TOM has joined default.  
+MAX: HI                            MAX: HI
+TOM: HELLO                         TOM: HELLO
+/join channel2                     /join channel2
+Success: Join success.             Success: Join success.
+Server: MAX has joined channel2.   Server: TOM has joined channel2.
+Server: TOM has joined channel2.   
+MAX: BYE                           TOM: BYE
+```
+Server output:
+```bash
+RECV 127.0.0.1:51158 | AUTH Username=user1 DisplayName=MAX Secret=secret1
+SENT 127.0.0.1:51158 | REPLY Reply=OK MessageContent=Auth success.
+SENT 127.0.0.1:51158 | MSG DisplayName=Server MessageContent=MAX has joined default.
+RECV 127.0.0.1:51161 | AUTH Username=user1 DisplayName=MAX Secret=secret1
+SENT 127.0.0.1:51161 | REPLY Reply=OK MessageContent=Auth success.
+SENT 127.0.0.1:51161 | MSG DisplayName=Server MessageContent=MAX has joined default.
+RECV 127.0.0.1:51158 | MSG DisplayName=MAX MessageContent=HI
+RECV 127.0.0.1:51161 | MSG DisplayName=TOM MessageContent=HELLO
+RECV 127.0.0.1:51158 | JOIN ChannelID=channel2 DisplayName=MAX
+SENT 127.0.0.1:51158 | REPLY Reply=OK MessageContent=Join success.
+RECV 127.0.0.1:51161 | JOIN ChannelID=channel2 DisplayName=TOM
+SENT 127.0.0.1:51161 | REPLY Reply=OK MessageContent=Join success.
+RECV 127.0.0.1:51158 | MSG DisplayName=MAX MessageContent=BYE
+RECV 127.0.0.1:51161 | MSG DisplayName=TOM MessageContent=BYE
+RECV 127.0.0.1:51158 | BYE 
+RECV 127.0.0.1:51161 | BYE 
+
+
+```
+
+`Conversation where clients are in different channels and they dont see each other messages`:
+
+Client output:
+```bash
+/auth user1 secret1 ALEX               /auth user2 secret2 NIK
+Success: Auth success.                 Success: Auth success.
+Server: ALEX has joined default.       Server: NIK has joined default.
+Server: NIK has joined default.
+/join channel
+Success: Join success.
+Server: ALEX has joined channel.       Server: ALEX has left default.
+ALEX: HI
+ALEX: HELLO
+ALEX: BYE
+
+```
+Server output:
+```bash
+RECV 127.0.0.1:51214 | AUTH Username=user1 DisplayName=ALEX Secret=secret1
+SENT 127.0.0.1:51214 | REPLY Reply=OK MessageContent=Auth success.
+SENT 127.0.0.1:51214 | MSG DisplayName=Server MessageContent=ALEX has joined default.
+RECV 127.0.0.1:51215 | AUTH Username=user1 DisplayName=ALEX Secret=secret1
+SENT 127.0.0.1:51215 | REPLY Reply=OK MessageContent=Auth success.
+SENT 127.0.0.1:51215 | MSG DisplayName=Server MessageContent=ALEX has joined default.
+RECV 127.0.0.1:51214 | JOIN ChannelID=channel DisplayName=ALEX
+SENT 127.0.0.1:51214 | REPLY Reply=OK MessageContent=Join success.
+RECV 127.0.0.1:51214 | MSG DisplayName=ALEX MessageContent=HI
+RECV 127.0.0.1:51214 | MSG DisplayName=ALEX MessageContent=HELLO
+RECV 127.0.0.1:51214 | MSG DisplayName=ALEX MessageContent=BYE
+RECV 127.0.0.1:51214 | BYE 
+RECV 127.0.0.1:51215 | BYE 
+
+
+```
+
 #### Examples from Wireshark:
 
 Simple TCP conversation:
@@ -208,8 +274,8 @@ Bye was send from client and server received it.
 
 ## References
 
-[1]: DOLEJŠKA, Daniel. PK-Projects-2024/Project 1 [online]. 2024 [cit. 2024-04-01]. Dostupné z: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%201
+[Project1] Dolejška, D. _Client for a chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-02-14]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%201
 
-[2]: Ipk_server.py [online]. 2024 [cit. 2024-04-01]. Available at: https://github.com/okurka12/ipk_proj1_livestream/blob/main/ipk_server.py
+[RFC9293] Eddy, W. _Transmission Control Protocol (TCP)_ [online]. August 2022. [cited 2024-02-14]. DOI: 10.17487/RFC9293. Available at: https://datatracker.ietf.org/doc/html/rfc9293
 
-[3]: Beej's Guide to Network Programming: Using Internet Sockets [online]. 2023 [cit. 2024-04-01]. Available at: https://beej.us/guide/bgnet/html/. 
+[RFC768] Postel, J. _User Datagram Protocol_ [online]. March 1997. [cited 2024-02-11]. DOI: 10.17487/RFC0768. Available at: https://datatracker.ietf.org/doc/html/rfc768
