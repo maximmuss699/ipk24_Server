@@ -6,6 +6,7 @@
 // Global array of channels
 static Channel channels[MAX_CHANNELS];
 
+// Find a channel by its ID in the global array
 Channel* find_channel_by_id(const char* channelID) {
     for (int i = 0; i < MAX_CHANNELS; i++) {
         if (strcmp(channels[i].channelName, channelID) == 0) {
@@ -14,7 +15,7 @@ Channel* find_channel_by_id(const char* channelID) {
     }
     return NULL;
 }
-
+// Get or create a channel by its name
 Channel* get_or_create_channel(const char* channelName) {
     for (int i = 0; i < MAX_CHANNELS; i++) {
         if (strcmp(channels[i].channelName, channelName) == 0) {
@@ -32,7 +33,7 @@ Channel* get_or_create_channel(const char* channelName) {
 
     return NULL;
 }
-
+// Leave a channel by removing the client from the channel
 void leave_channel(Client *client) {
     if (client->channel[0] == '\0') {
         return;
@@ -53,6 +54,7 @@ void leave_channel(Client *client) {
     }
 }
 
+// Join a channel by adding the client to the channel
 int join_channel(Client *client, const char* channelName) {
     leave_channel(client); // Ensure leaving previous channel
 
@@ -70,6 +72,7 @@ int join_channel(Client *client, const char* channelName) {
     return -1;
 }
 
+// Broadcast a message to all clients in the channel
 void broadcast_message(Channel *channel, const char *message, Client *sender) {
     for (int i = 0; i < channel->clientCount; i++) {
         Client *client = channel->clients[i];

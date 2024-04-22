@@ -13,7 +13,7 @@ The server is built to handle key functionalities including client authenticatio
 ## IPK24-CHAT Protocol
 
 ### Protocol Features:
-The IPK24-CHAT protocol is designed to implement client-server communication for a chat application. The protocol defines a set of message types and operations that clients and servers can use to interact with each other. The protocol features include:
+The IPK24-CHAT protocol is made to implement client-server communication for a chat application. The protocol defines a set of message types and operations that clients and servers can use to interact with each other. The protocol features include:
 - **Transport Layer Flexibility**: Works on both TCP and UDP transport protocols.
 - **Dual Protocol Support**: Supports both TCP and UDP transport protocols for client-server communication.
 - **State Management**: Implements a finite state machine (FSM) to manage client-server interactions.
@@ -60,7 +60,7 @@ Options:
 -h                 Display this help message and exit.
 ```
 ## Implementation
-This section describes how the server manage multiple client connections simultaneously using TCP and UDP protocols.
+This section describes how the server manage multiple client connections using TCP and UDP protocols.
 
 ### Main function
 The main function first parses the command line arguments with the `getopt()` function. Check if the arguments are valid and then initializes the server with the provided IP address and port number. The server then enters the main loop, where uses `select()` to handle incoming TCP connection requests, TCP client data, and UDP packets.
@@ -77,12 +77,39 @@ The main FSM logic for TCP clients was implemented in the `tcp_client_handler.c`
 For channel management it uses functions from `channels.c` file. When the Client firstly authorizes, it joins the default channel and then can switch between channels.
 After authorization the Server added the client to the default channel using `join_channel()` function and sends a broadcast message to the channel using `broadcast_message()` function.
 ### UDP Client Management
+UDP clients are managed differently than TCP clients. The server uses a single UDP socket to communicate with all UDP clients and uses the same `Client` structure to store information about the UDP client, including the client's address, port, and other information.
 
+For managing UDP clients were implemented logic for managing `Client sessions`. Each UDP client is identified by their unique network address, which includes their IP address and port number. This helps the server recognize who is sending the data and ensures that replies are sent to the correct client.
+
+When the server receives data from a new client, it sets up a new `session` for that client using their network address. This helps the server manage different clients separately. Each session can be in different states.
+
+Depending on the session's current state, different types of messages are expected and processed differently. For example, only in the OPEN_STATE can a client send chat messages to others. The server handles each message according to its type and the session's state, ensuring confrims are sent back.
+
+It also uses the same functions for channel management as TCP clients and the same FSM logic for managing the client's state.
 
 ### Channel Management
 All channel management functions are implemented in the `channels.c` file. There are functions like `join_channel()`, `leave_channel()`, `get_or_create_channel()` and `broadcast_message()`. 
 
 `Broadcast_message()` function uses `for` loop to send the message to all clients in the channel. It sends the message to all clients except the sender and uses the `send()` function to send the message to the every client's socket in this channel.
+
+
+### Client Structure
+
+The `Client` structure is made to store information about each network client, including both TCP and UDP clients:
+
+| Field Name    | Type             | Description                                                    | Limit                    |
+|---------------|------------------|----------------------------------------------------------------|--------------------------|
+| `fd`          | `int`            | File descriptor for the client's socket connection.            | N/A                      |
+| `state`       | `State`          | Current state of the client, managing session states.          | Enumerated Type          |
+| `buffer`      | `char[]`         | Temporary storage for data received from or sent to client.    | `BUFFER_SIZE`            |
+| `username`    | `char[]`         | Username of the client.                                        | `MAX_USERNAME_LENGTH`    |
+| `channel`     | `char[]`         | Name of the channel to which the client is connected.          | `MAX_CHANNEL_ID_LENGTH`  |
+| `secret`      | `char[]`         | Client's authentication secret.                                | `MAX_SECRET_LENGTH`      |
+| `displayName` | `char[]`         | Display name of the client.                                    | `MAX_DISPLAY_NAME_LENGTH`|
+| `addr`        | `struct sockaddr_in` | Client’s network address, including IP and port.               | N/A                      |
+| `addr_len`    | `socklen_t`      | Length of the client’s address.                                | N/A                      |
+| `active`      | `int`            | Indicates whether the client is active (1) or not (0)(for UDP) | N/A                      |
+
 
 
 
@@ -93,9 +120,9 @@ The server can handle client disconnections gracefully. When a client sends a `B
 When the server receives the `ERR` message from the client it try to gracefully close the connection and free the memory allocated for the client structure. Server and Client sends `BYE` message to each other and then close the connection.
 
 ## Testing
-The server was tested using both TCP and UDP protocols. It was tested with multiple clients connecting simultaneously and sending messages to each other. And also was tested with different scenarios, including successful and failed client authentication, joining and leaving channels, and sending messages.
+The server was tested using both TCP and UDP protocols. It was tested with multiple clients connecting simultaneously and sending messages to each other. Tested on macOS 14 and Ubuntu 20.
 ### TCP clients testing
-TCP clients were tested using the server from [1]. The server was started with the following command:
+TCP clients were tested using the server from [ipk24chat-client] . The server was started with the following command:
 ```bash
 ./ipk24chat-server -l 127.0.0.1 -p 4567
 ```
@@ -105,6 +132,8 @@ The client was started with the following command:
 ```
 #### Examples of client and server outputs are shown below:
 `Simple conversation of one TCP client`:
+
+Client authenticates, joins the default channel, sends a message, switches to another channel, sends a message, and then disconnects.
 
 Client output:
 ```bash
@@ -131,6 +160,8 @@ RECV 127.0.0.1:51109 | BYE
 ```
 
 `Simple conversation of two TCP clients`:
+
+Two clients authenticate, join the default channel, send messages, switch to another channel, send messages, and then disconnect.
 
 Clients output:    
 ```bash
@@ -170,6 +201,8 @@ RECV 127.0.0.1:51161 | BYE
 
 `Conversation where clients are in different channels and they dont see each other messages`:
 
+Two clients authenticate, join different channels, send messages, and then disconnect.
+
 Client output:
 ```bash
 /auth user1 secret1 ALEX               /auth user2 secret2 NIK
@@ -205,79 +238,81 @@ RECV 127.0.0.1:51215 | BYE
 
 #### Examples from Wireshark:
 
-Simple TCP conversation:
+`Simple conversation of two TCP clients`:
+
+The same conversation as above but in Wireshark.
 ```bash
-AUTH tom AS Tomik USING secret
+AUTH user1 AS MAX USING secret1.
                               REPLY OK IS Auth success.
-                              MSG FROM Server IS Tomik joined default.
-                              MSG FROM Server IS Tomik Hello
-MSG FROM Tomik IS Hi
-MSG FROM Tomik IS Bye
+                              MSG FROM Server IS MAX joined default.
+AUTH user2 AS TOM USING secret.
+                              REPLY OK IS Auth success.
+                              MSG FROM Server IS TOM joined default.
+                              MSG FROM Server IS TOM joined default. (Broadcast message to MAX)
+MSG FROM MAX IS HI.
+                              MSG FROM MAX IS HI (Broadcast message to TOM)
+MSG FROM TOM IS HELLO.
+                              MSG FROM TOM IS HELLO (Broadcast message to MAX)
+JOIN channel2 AS MAX.
+                              MSG FROM Server IS MAX has left default.                
+                              REPLY OK IS Join success.
+                              MSG FROM Server IS MAX joined channel2. 
+JOIN channel2 AS TOM.
+                              MSG FROM Server IS TOM joined channel2. (Broadcast message to MAX)
+                              REPLY OK IS Join success.
+                              MSG FROM Server IS TOM joined channel2.
+BYE
 BYE
 ```
-Bye message from client:
+`Client uses /rename command during the conversation`:
+
+Client started the conversation with DisplayName=SAM, then renamed himself into DisplayName=SAM22 and continued the conversation.
 ```bash
-AUTH tom AS Tomik USING secret
-                              REPLY OK IS Auth success.
+AUTH user AS SAM USING secret.
+                                REPLY OK IS Auth success.
+                                MSG FROM Server IS SAM joined default.
+(SAM changed his DisplayName to SAM22)
+JOIN channel2.
+                                REPLY OK IS Join success.
+                                MSG FROM Server IS SAM22 joined channel2.
 BYE
 ```
 
 ### UDP Testing
-For testing UDP was used servrer from [2]. The server was started with the following command:
+UDP clients were tested using the server from [ipk24chat-client]. Handling UDP clients wasnt fully implemented. The server was started with the following command:
 ```bash
- python3 ipk_server.py
+ ./ipk24chat-server -l 127.0.0.1 -p 4567
 ```
 The client was started with the following command:
 ```bash
 ./ipk24chat-client -t udp -s 127.0.0.1 -p 4567
 ```
 
-#### Examples of the client input and output are shown below:
+Handling of UDP clients not fully implemented. Server not fully supports UDP clients. It can handle clients in `ACCEPT`, `AUTH` and partially in`OPEN` states.
+
+#### Examples of client and server outputs are shown below:
+
+`Simple conversation of one UDP client`:
+
+Client output:
 ```bash
-/auth a b Tim
-Success: Hi, Tim, this is a successful REPLY message to your AUTH message id=0. You wanted to authenticate under the username a
-Tim: Hi
-Server: Hi, Tim! This is a reply MSG to your MSG id=256 content='Hi...' :)
-/join channel2
-Success: Hi, Tim, this is a successful REPLY message to your JOIN message id=512. You wanted to join the channel channel2
+/auth user secret TOM
+Success: Auth success.
+Server: TOM has joined default.
+TOM: Hi
+TOM: Bye
 ```
 
-```bash
-/auth user1 secret Kaja
-Success: Hi, Kaja, this is a successful REPLY message to your AUTH message id=0. You wanted to authenticate under the username user1
-Kaja: Bye
-Server: Hi, Kaja! This is a reply MSG to your MSG id=256 content='Bye...' :) 
-```
-
-#### Compare MessageID and screenshot from Wireshark:
-```bash
-/auth user secret Max
-Success: Hi, Max, this is a successful REPLY message to your AUTH message id=0. You wanted to authenticate under the username user
-hi
-Max: hi
-Server: Hi, Max! This is a reply MSG to your MSG id=256 content='hi...' :)
-```
-![Example Image](messageID.png)
-MessageIDs are correct.
-
-#### Sending Bye from client and screenshot from Wireshark:
-```bash
-/auth user secret Kaja
-Success: Hi, Kaja, this is a successful REPLY message to your AUTH message id=0. You wanted to authenticate under the username user
-Ahoj
-Kaja: Ahoj
-Server: Hi, Kaja! This is a reply MSG to your MSG id=256 content='Ahoj...' :)
-Ctrl + c
-```
-![Example Image](Bye.png)
-Bye was send from client and server received it.
 
 ## References
 
 [Project1] Dolejška, D. _Client for a chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-04-22]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%201
+
+[ipk24chat-client] Samusevich, M. _IPK Project 1_ [online]. April 2024. [cited 2024-04-22]. Available at: https://git.fit.vutbr.cz/xsamus00/IPK24
 
 [Project2] Dolejška, D. _Chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-04-22]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%202/iota#ipk-project-2-chat-server-using-ipk24-chat-protocol
 
 [RFC9293] Eddy, W. _Transmission Control Protocol (TCP)_ [online]. August 2022. [cited 2024-04-22]. DOI: 10.17487/RFC9293. Available at: https://datatracker.ietf.org/doc/html/rfc9293
 
 [RFC768] Postel, J. _User Datagram Protocol_ [online]. March 1997. [cited 2024-04-22]. DOI: 10.17487/RFC0768. Available at: https://datatracker.ietf.org/doc/html/rfc768
+

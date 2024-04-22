@@ -1,5 +1,3 @@
-// tcp_client_handler.h
-
 #ifndef TCP_CLIENT_HANDLER_H
 #define TCP_CLIENT_HANDLER_H
 

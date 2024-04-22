@@ -1,3 +1,12 @@
+/**
+ * @file IPK24-CHAT.c
+ *
+ * @name IPK project 2 - Server for chat application
+ * @brief Server for chat application
+ * @author Maksim Samusevich(xsamus00)
+ * @date 22.04.2024
+ */
+
 #include "validation.h"
 #include "cli.h"
 #include "channels.h"
@@ -7,31 +16,17 @@
 
 
 typedef struct {
-    int sockfd;
-    int protocol;
+    int sockfd; // Socket file descriptor
+    int protocol; // 0 for TCP, 1 for UDP
     struct sockaddr_in addr; // Client address
     socklen_t addr_len;      // Length of client address
 } thread_arg;
 
 
-
-typedef struct {
-    State state;                        // Current state of the client
-    char buffer[BUFFER_SIZE];           // Buffer to hold incoming data
-    char username[MAX_USERNAME_LENGTH]; // Username for the client
-    char channel[MAX_CHANNEL_ID_LENGTH];// Channel the client is subscribed to
-    char secret[MAX_SECRET_LENGTH];     // Secret/password for authentication
-    char displayName[MAX_DISPLAY_NAME_LENGTH]; // Display name of the client
-    struct sockaddr_in addr;            // Client's address
-    socklen_t addr_len;                 // Length of the client's address
-    int sockfd;                         // Socket file descriptor
-    pthread_t thread_id;                // Thread ID for the client
-} UDPClient;
-
-
 #define MAX_UDP_CLIENTS 100
-UDPClient udpClients[MAX_UDP_CLIENTS];
-int udpClientCount = 0;
+#define MAX_MESSAGE_LENGTH 1024
+Client udpClients[MAX_UDP_CLIENTS]; // Array of UDP clients
+int udpClientCount = 0; // Number of active UDP clients
 pthread_mutex_t udpClientMutex = PTHREAD_MUTEX_INITIALIZER;
 
 
@@ -49,15 +44,11 @@ void signalHandler(int signum) {
     cleanup_udp_sessions();
 }
 
-
-
-
-
+// Send a reply message to the UDP client
 void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uint8_t result, const char *message_contents, uint16_t ref_message_id) {
     unsigned char buffer[1024];
     int offset = 0;
     int recv_confirm = 0;
-
 
 
     uint16_t netOrderMessageID = htons(messageID);
@@ -65,16 +56,14 @@ void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uin
     buffer[offset++] = (char)((netOrderMessageID >> 8) & 0xFF);
     buffer[offset++] = (char)(netOrderMessageID & 0xFF);
 
-    // Результат операции
+
     buffer[offset++] = result;
 
-
-    // ID сообщения, на которое мы отвечаем
     uint16_t net_ref_message_id = htons(ref_message_id);
     buffer[offset++] = (net_ref_message_id >> 8) & 0xFF;
     buffer[offset++] = net_ref_message_id & 0xFF;
 
-    // Содержимое сообщения
+    // Copy the message contents to the buffer
     int message_len = strlen(message_contents);
     memcpy(buffer + offset, message_contents, message_len);
     offset += message_len;
@@ -88,7 +77,8 @@ void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uin
     } else {
         printf("Reply sent successfully\n");
     }
-    while(recv_confirm == 0){
+    while(recv_confirm == 0) // Wait for confirm message
+    {
         int recv_len = recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
         if (recv_len < 0) {
             perror("Error receiving data");
@@ -106,6 +96,7 @@ void send_reply(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uin
 
 }
 
+// Send a confirm message to the UDP client
 void send_confirm(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, uint16_t message_id) {
     unsigned char buffer[1024];
     int offset = 0;
@@ -115,7 +106,7 @@ void send_confirm(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, u
     buffer[offset++] = (char)((netOrderMessageID >> 8) & 0xFF);
     buffer[offset++] = (char)(netOrderMessageID & 0xFF);
 
-    // Отправляем сообщение
+    // Send the confirm message
     if (sendto(sockfd, buffer, offset, 0, (struct sockaddr *)cli_addr, cli_len) < 0) {
         perror("Failed to send confirm");
     } else {
@@ -125,67 +116,107 @@ void send_confirm(int sockfd, struct sockaddr_in *cli_addr, socklen_t cli_len, u
 
 }
 
+// Send a MSG message to the UDP client
+void send_msg(int sockfd, const struct sockaddr_in *addr, socklen_t addr_len, const char *displayName, const char *channel, uint16_t messageID) {
+    char buffer[MAX_MESSAGE_LENGTH];
+    int offset = 0;
+    int recv_confirm = 0;
+    // Message type for MSG
+    buffer[offset++] = 0x04;
 
-void handle_udp_accept_state(UDPClient *client) {
-    struct pollfd fds;
-    fds.fd = client->sockfd;
-    fds.events = POLLIN;
+    uint16_t netOrderMessageID = htons(messageID);
+    buffer[offset++] = (netOrderMessageID >> 8) & 0xFF; // High byte
+    buffer[offset++] = netOrderMessageID & 0xFF;        // Low byte
 
-    while(client->state == ACCEPT_STATE) {
-        int ret = poll(&fds, 1, POLL_TIMEOUT);
-        if (ret < 0) {
-            perror("Poll failed");
-            client->state = ERROR_STATE;
-            return;
-        } else if (ret == 0) {
-            printf("Timeout occurred, no data received.\n");
-            continue;
+    // Static part of the message as "Server"
+    const char *serverName = "Server";
+    strcpy(buffer + offset, serverName);
+    offset += strlen(serverName) + 1; // +1 for null terminator
+
+    // Construct the message content and add a null terminator
+    snprintf(buffer + offset, MAX_MESSAGE_LENGTH - offset, "%s has joined %s", displayName, channel);
+    offset += strlen(buffer + offset) + 1; // Move offset past the end of the string including null terminator
+
+    // Ensure the total message does not exceed buffer size
+    if (offset > MAX_MESSAGE_LENGTH) {
+        fprintf(stderr, "Error: Message too long to send\n");
+        return;
+    }
+
+    // Send the packet
+    ssize_t sentBytes = sendto(sockfd, buffer, offset, 0, (const struct sockaddr *)addr, addr_len);
+    if (sentBytes < 0) {
+        perror("Failed to send message");
+    }
+
+    while(recv_confirm == 0){
+        int recv_len = recv(sockfd, buffer, BUFFER_SIZE - 1, 0);
+        if (recv_len < 0) {
+            perror("Error receiving data");
+
         }
 
-        if (fds.revents & POLLIN) {
-            memset(client->buffer, 0, BUFFER_SIZE);
-            int bytes_received = recvfrom(client->sockfd, client->buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client->addr, &client->addr_len);
-            if (bytes_received < 0) {
-                perror("ACCEPT recvfrom failed");
-                client->state = ERROR_STATE;
-                return;
-            }
-
-            uint16_t receivedMessageID = (client->buffer[1] << 8) | client->buffer[2];
-            send_confirm(client->sockfd, &client->addr, client->addr_len, receivedMessageID);
-
-            size_t offset1 = 3;  // Adjusting the starting position after message type and ID
-            char username[100], display_name[100], secret[100];
-            strcpy(username, client->buffer + offset1);
-            offset1 += strlen(username) + 1;
-            strcpy(display_name, client->buffer + offset1);
-            offset1 += strlen(display_name) + 1;
-            strcpy(secret, client->buffer + offset1);
-
-            if (client->buffer[0] == 0x02) {
-                if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
-                    strcpy(client->username, username);
-                    strcpy(client->secret, secret);
-                    strcpy(client->displayName, display_name);
-                    printf("Transitioning from ACCEPT_STATE to OPEN_STATE\n");
-                    client->state = OPEN_STATE;
-                    send_reply(client->sockfd, &client->addr, client->addr_len, 1, "Authentication successful", receivedMessageID);
-                } else {
-                    client->state = ERROR_STATE;
-                    char response[] = "Authentication failed";
-                    sendto(client->sockfd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
-                }
-            } else {
-                char response[] = "Authentication failed";
-                sendto(client->sockfd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
+        buffer[recv_len] = '\0';
+        if (buffer[0] == 0x00) {
+            uint16_t receivedMessageID = (buffer[1] << 8) | buffer[2];
+            if (receivedMessageID == messageID) {
+                recv_confirm = 1;
             }
         }
     }
 }
 
-void handle_udp_open_state(UDPClient *client){
+
+void handle_udp_accept_state(Client *client) {
+    char response[1024];
+    char response2[1024];
+    if (client->state == ACCEPT_STATE) {
+        // Assume buffer is already populated before this function is called
+        uint16_t receivedMessageID = (client->buffer[1] << 8) | client->buffer[2];
+        send_confirm(client->fd, &client->addr, client->addr_len, receivedMessageID);
+
+        size_t offset1 = 3; // Adjust for message type and message ID
+        char username[100], display_name[100], secret[100];
+        strcpy(username, client->buffer + offset1);
+        offset1 += strlen(username) + 1;
+        strcpy(display_name, client->buffer + offset1);
+        offset1 += strlen(display_name) + 1;
+        strcpy(secret, client->buffer + offset1);
+
+        if (client->buffer[0] == 0x02) { // Check if it's an AUTH message
+            if (Check_username(username) && Check_secret(secret) && Check_Displayname(display_name)) {
+                strcpy(client->username, username);
+                strcpy(client->secret, secret);
+                strcpy(client->displayName, display_name);
+                printf("Authentication successful, transitioning to OPEN_STATE\n");
+                client->state = OPEN_STATE;
+                get_or_create_channel(DEFAULT_CHANNEL);
+                join_channel(client, DEFAULT_CHANNEL);
+                send_reply(client->fd, &client->addr, client->addr_len, 1, "Authentication successful", receivedMessageID);
+                sleep(1);
+                send_msg(client->fd, &client->addr, client->addr_len, client->displayName, DEFAULT_CHANNEL, messageID);
+                snprintf(response2, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, DEFAULT_CHANNEL);
+                send(client->fd, response2, strlen(response2), 0);
+                broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), response2, client);
+            } else {
+                printf("Authentication failed\n");
+                client->state = ERROR_STATE;
+                char response[] = "Authentication failed";
+                sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
+            }
+        } else {
+            printf("Received unexpected message type\n");
+            client->state = ERROR_STATE;
+            char response[] = "Invalid message type";
+            sendto(client->fd, response, strlen(response), 0, (struct sockaddr *)&client->addr, client->addr_len);
+        }
+    }
+}
+
+
+void handle_udp_open_state(Client *client){
     struct pollfd fds;
-    fds.fd = client->sockfd;
+    fds.fd = client->fd;
     fds.events = POLLIN;
 
     while(client->state == OPEN_STATE) {
@@ -203,7 +234,7 @@ void handle_udp_open_state(UDPClient *client){
 
         if (fds.revents & POLLIN) {  // If there is data to read
             memset(client->buffer, 0, BUFFER_SIZE);
-            int bytes_received = recvfrom(client->sockfd, client->buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client->addr, &client->addr_len);
+            int bytes_received = recvfrom(client->fd, client->buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client->addr, &client->addr_len);
             if (bytes_received < 0) {
                 perror("recvfrom failed");
                 client->state = ERROR_STATE;
@@ -212,25 +243,22 @@ void handle_udp_open_state(UDPClient *client){
 
             uint16_t receivedMessageID = ntohs(*(uint16_t *)(client->buffer + 1));
             uint8_t messageType = client->buffer[0];
-            char *displayName = client->buffer + 3;
-            char *messageContent = displayName + strlen(displayName) + 1;
+           // char *displayName = client->buffer + 3;
+           // char *messageContent = displayName + strlen(displayName) + 1;
             printf("State is %d\n", client->state);
-            send_confirm(client->sockfd, &client->addr, client->addr_len, receivedMessageID);
+            send_confirm(client->fd, &client->addr, client->addr_len, receivedMessageID);
 
             switch (messageType) {
                 case 0x03:  // JOIN
-                    printf("JOIN\n");
-                    break;
 
+                    break;
                 case 0x04:  // MSG
-                case 0xFE:  // ERR
-                    printf("%s: %s\n", displayName, messageContent);
-                    // broadcast_message(client->channel, messageContent, displayName, messageType);
                     break;
+                case 0xFE:  // ERR
 
+                    break;
                 default:
-                    printf("Unknown message type received: %d\n", messageType);
-                    //send_error_reply(client->sockfd, &client->addr, client->addr_len, "Invalid message type", receivedMessageID);
+
                     break;
             }
         }
@@ -239,11 +267,12 @@ void handle_udp_open_state(UDPClient *client){
 
 
 
-
-void* client_handler(void* arg) {
+// Handler for TCP clients
+void* client_handler(void* arg)
+{
+    // Creating a thread for each client
     thread_arg* t_arg = (thread_arg*) arg;
     int client_sock = t_arg->sockfd;
-    int protocol = t_arg->protocol;
     free(arg);
 
     Client client;
@@ -284,8 +313,7 @@ void* client_handler(void* arg) {
 }
 
 
-void* udp_client_handler(void* arg) {
-    UDPClient *client = (UDPClient *)arg;
+void* udp_client_handler( Client *client){
     printf("UDP client handler started\n");
     printf("Client state: %d\n", client->state);
     printf("Client buffer: %s\n", client->buffer);
@@ -315,75 +343,82 @@ void* udp_client_handler(void* arg) {
             break;  // Break the loop to start cleanup
         }
     }
-    close(client->sockfd);
-    client->sockfd = -1;
-    free(client);  // Ensure to free the allocated memory for the client
+    close(client->fd);
+    client->fd = -1;
+
     return NULL;
 }
 
 
-
-int find_or_create_udp_session(int udp_sockfd, struct sockaddr_in *addr, socklen_t len) {
-    pthread_mutex_lock(&udpClientMutex);
+// Find or create a UDP session
+int find_or_create_udp_session(struct sockaddr_in *addr, socklen_t len, int udp_sockfd) {
     for (int i = 0; i < udpClientCount; i++) {
-        if (udpClients[i].addr_len == len && memcmp(&udpClients[i].addr, addr, len) == 0) {
+        if (udpClients[i].active && memcmp(&udpClients[i].addr, addr, sizeof(struct sockaddr_in)) == 0)
+        {
             return i; // Session found
         }
     }
 
-    // Create new session if possible
     if (udpClientCount < MAX_UDP_CLIENTS) {
-        UDPClient *client = &udpClients[udpClientCount++];
+        Client *client = &udpClients[udpClientCount];
         client->addr = *addr;
         client->addr_len = len;
-        client->state = ACCEPT_STATE;
-        client->sockfd = udp_sockfd;  // Storing the socket descriptor if needed for sending
-        pthread_mutex_unlock(&udpClientMutex);
-        return udpClientCount - 1;
+        client->fd = udp_sockfd;
+        client->active = 1;
+        client->state = ACCEPT_STATE;  // Set initial state to ACCEPT_STATE
+        memset(client->buffer, 0, BUFFER_SIZE); // Initialize buffer
+        // Initialize other fields as necessary
+        memset(client->username, 0, MAX_USERNAME_LENGTH);
+        memset(client->channel, 0, MAX_CHANNEL_ID_LENGTH);
+        memset(client->secret, 0, MAX_SECRET_LENGTH);
+        memset(client->displayName, 0, MAX_DISPLAY_NAME_LENGTH);
+
+        udpClientCount++;
+        return udpClientCount - 1; // Return the new client's index
     }
-    pthread_mutex_unlock(&udpClientMutex);
 
     return -1; // No space for more clients
 }
 
+
+// Handle incoming UDP packets
 void handle_udp_packet(int udp_sockfd) {
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
     char buffer[BUFFER_SIZE];
-    int bytes_received = recvfrom(udp_sockfd, buffer, sizeof(buffer), 0, (struct sockaddr *)&cli_addr, &cli_len);
-    if (bytes_received < 0) {
-        perror("recvfrom failed");
+
+    struct pollfd fds;
+    fds.fd = udp_sockfd;
+    fds.events = POLLIN;
+    int ret = poll(&fds, 1, POLL_TIMEOUT);
+
+    if (ret < 0) {
+        perror("Poll failed");
+        return;
+    } else if (ret == 0) {
+        printf("Poll timeout, no data received.\n");
         return;
     }
-    printf("Received UDP packet from %s:%d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
 
-
-    // Check if this client is known
-    int clientIndex = find_or_create_udp_session(udp_sockfd, &cli_addr, cli_len);
-    if (clientIndex < 0) {
-        fprintf(stderr, "Failed to handle new UDP client");
-        return;
-    }
-    UDPClient *client = &udpClients[clientIndex];
-    memcpy(client->buffer, buffer, bytes_received);
-
-    // If new session, start a new thread
-    if (pthread_equal(client->thread_id, pthread_self()) || client->thread_id == 0) {
-        // If no thread is running, start a new thread
-        if (pthread_create(&client->thread_id, NULL, udp_client_handler, client) != 0) {
-            perror("Failed to create thread for new UDP client");
-        } else {
-            pthread_detach(client->thread_id);
+    if (fds.revents & POLLIN) {
+        int bytes_received = recvfrom(udp_sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&cli_addr, &cli_len);
+        if (bytes_received < 0) {
+            perror("recvfrom failed");
+            return;
         }
-    } else {
-        // If a thread is already running, update data (could use a condition variable or another synchronization mechanism here)
-        // Signal to the existing thread that new data has arrived (not implemented here)
-        printf("Thread already running for this client. Updated data in buffer.\n");
+
+        int session_index = find_or_create_udp_session(&cli_addr, cli_len, udp_sockfd);
+        if (session_index >= 0) {
+            memcpy(udpClients[session_index].buffer, buffer, bytes_received);
+            printf("Received UDP packet from %s:%d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
+
+            udp_client_handler(&udpClients[session_index]);
+
+        } else {
+            printf("Failed to handle new UDP client or no space left.\n");
+        }
     }
 }
-
-
-
 
 void FSM_function(void) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);

@@ -1,4 +1,3 @@
-// client.h
 #ifndef CLIENT_H
 #define CLIENT_H
 
@@ -22,10 +21,11 @@
 #define MAX_SECRET_LENGTH 128
 #define MAX_DISPLAY_NAME_LENGTH 20
 #define MAX_CHANNEL_ID_LENGTH 20
-#define POLL_TIMEOUT 2000000 // Timeout for poll in milliseconds
+#define POLL_TIMEOUT 2000000
 #define DEFAULT_CHANNEL "default"
 #define MAX_MSG_LEN 2048
 
+// Define the states of the client
 typedef enum {
     ACCEPT_STATE,
     AUTH_STATE,
@@ -34,6 +34,7 @@ typedef enum {
     END_STATE
 } State;
 
+// Define the client structure
 typedef struct {
     int fd;
     State state;
@@ -43,6 +44,8 @@ typedef struct {
     char secret[MAX_SECRET_LENGTH];
     char displayName[MAX_DISPLAY_NAME_LENGTH];
     struct sockaddr_in addr;
+    socklen_t addr_len;
+    int active;
 } Client;
 
 void log_message(const char* prefix, int fd, const char* message, const char* command);

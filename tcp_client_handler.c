@@ -4,6 +4,7 @@
 #define MAX_MESSAGE_LENGTH 4096
 
 
+//Function for handling TCP client in ACCEPT state
 void handle_accept_state(Client *client) {
     static char accumulated_data[MAX_MESSAGE_LENGTH]; // Buffer to accumulate data
     static int accumulated_length = 0; // Current length of accumulated data
@@ -52,6 +53,7 @@ void handle_accept_state(Client *client) {
                     log_message("SENT", client->fd, response2, "MSG");
                     sleep(1);
                     broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), response2, client);
+                    log_message("SENT", client->fd, response2, "MSG");
                     recv_auth = 1;
                     client->state = OPEN_STATE;
                 } else {
@@ -69,7 +71,7 @@ void handle_accept_state(Client *client) {
     }
 }
 
-
+// Function for handling TCP client in AUTH state
 void handle_auth_state(Client *client) {
     char response[1024];
     char response2[1024];
@@ -97,6 +99,7 @@ void handle_auth_state(Client *client) {
                 log_message("SENT", client->fd, response2, "MSG");
                 sleep(1);
                 broadcast_message(get_or_create_channel(DEFAULT_CHANNEL), response2, client);
+                log_message("SENT", client->fd, response2, "MSG");
                 recv_auth = 1;
                 client->state = OPEN_STATE;
             } else {
@@ -113,7 +116,7 @@ void handle_auth_state(Client *client) {
 
 
 }
-
+// Function for handling TCP client in OPEN state
 void handle_open_state(Client *client) {
     char command[10];
     char response[1024];
@@ -156,7 +159,6 @@ void handle_open_state(Client *client) {
                 snprintf(response, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, client->channel);
                 send (client->fd, response, strlen(response), 0);
                 sleep(1);
-                //log_message("SENT", client->fd, response);
                 char currentChannel[MAX_CHANNEL_ID_LENGTH];
                 strncpy(currentChannel, client->channel, MAX_CHANNEL_ID_LENGTH);
                 if (join_channel(client, currentChannel) != 0) {
@@ -214,7 +216,7 @@ void handle_end_state(Client *client) {
     client->fd = -1;
 }
 
-
+// Function to log a message with the given prefix, file descriptor, message content, and command
 void log_message(const char* prefix, int fd, const char* message, const char* command) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
