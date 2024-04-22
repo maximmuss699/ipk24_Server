@@ -2,7 +2,7 @@ CC=gcc
 CFLAGS=-I. -Wall -Wextra -pedantic -std=c99 -g
 LDFLAGS=-pthread
 
-TARGET=ipk24server
+TARGET=ipk24chat-server
 SOURCES=server.c validation.c cli.c channels.c tcp_client_handler.c
 OBJECTS=$(SOURCES:.c=.o)
 

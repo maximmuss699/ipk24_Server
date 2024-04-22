@@ -3,9 +3,10 @@
 
 #include "client.h"  // Assuming you have a client structure defined elsewhere
 
-#define MAX_CHANNELS 10
-#define MAX_CLIENTS 10
+#define MAX_CHANNELS 100
+#define MAX_CLIENTS 100
 #define MAX_CHANNEL_ID_LENGTH 20
+
 
 typedef struct {
     char channelName[MAX_CHANNEL_ID_LENGTH];

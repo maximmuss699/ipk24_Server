@@ -35,13 +35,11 @@ Channel* get_or_create_channel(const char* channelName) {
 
 void leave_channel(Client *client) {
     if (client->channel[0] == '\0') {
-        printf("Client is not in any channel.\n");
         return;
     }
 
     Channel* channel = find_channel_by_id(client->channel);
     if (!channel) {
-        printf("No such channel found: %s\n", client->channel);
         return;
     }
 

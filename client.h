@@ -22,10 +22,9 @@
 #define MAX_SECRET_LENGTH 128
 #define MAX_DISPLAY_NAME_LENGTH 20
 #define MAX_CHANNEL_ID_LENGTH 20
-#define MAX_CHANNELS 10 // Maximum number of channels
-#define MAX_CLIENTS 10 // Maximum number of simultaneous clients
 #define POLL_TIMEOUT 2000000 // Timeout for poll in milliseconds
 #define DEFAULT_CHANNEL "default"
+#define MAX_MSG_LEN 2048
 
 typedef enum {
     ACCEPT_STATE,
@@ -46,7 +45,7 @@ typedef struct {
     struct sockaddr_in addr;
 } Client;
 
-void log_message(const char* prefix, int fd, const char* message);
+void log_message(const char* prefix, int fd, const char* message, const char* command);
 void handle_accept_state(Client *client);
 void handle_auth_state(Client *client);
 void handle_open_state(Client *client);
