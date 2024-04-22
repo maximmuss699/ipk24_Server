@@ -1,7 +1,7 @@
 #ifndef CHANNEL_H
 #define CHANNEL_H
 
-#include "client.h"  // Assuming you have a client structure defined elsewhere
+#include "client.h"
 
 #define MAX_CHANNELS 100
 #define MAX_CLIENTS 100

@@ -33,6 +33,8 @@ void handle_accept_state(Client *client) {
             strcat(accumulated_data, "\n");
             strncpy(client->buffer, accumulated_data, BUFFER_SIZE - 1);
             client->buffer[BUFFER_SIZE - 1] = '\0';
+            memset(accumulated_data, 0, MAX_MESSAGE_LENGTH);  // Clear accumulated_data to prevent old data interference
+            accumulated_length = 0;
             if (strncmp(client->buffer, "AUTH ", 5) == 0) {
                 int args_count = sscanf(client->buffer, "AUTH %s %s %s", client->username, client->secret,
                                         client->displayName);
@@ -45,8 +47,7 @@ void handle_accept_state(Client *client) {
                     log_message("SENT", client->fd, response, "REPLY");
                     get_or_create_channel(DEFAULT_CHANNEL);
                     join_channel(client, DEFAULT_CHANNEL);
-                    snprintf(response2, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n",
-                             client->displayName, DEFAULT_CHANNEL);
+                    snprintf(response2, sizeof(response), "MSG FROM Server IS %s has joined %s.\r\n", client->displayName, DEFAULT_CHANNEL);
                     send(client->fd, response2, strlen(response2), 0);
                     log_message("SENT", client->fd, response2, "MSG");
                     sleep(1);

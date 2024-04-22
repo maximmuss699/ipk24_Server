@@ -4,7 +4,7 @@
 
 This project develops a server application, which is capable to communicate with remote clients using `IPK24-CHAT` protocol [Project1]. The server is capable of managing multiple client connections, supporting two transport protocols: TCP [RFC9293] and UDP [RFC768]. 
 
-The server is built to handle key functionalities including client authentication, channel management, and message broadcasting among connected clients. Implemented in C and uses socket API for network communications.  Behvaior of the server is described in the FSM diagram below.
+The server is built to handle key functionalities including client authentication, channel management, and message broadcasting among connected clients. Implemented in C and uses socket API for network communications.  Behvaior of the server is described in the FSM diagram below [Project2].
 
 
 ![Alt text](https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/media/branch/master/Project%202/iota/diagrams/protocol_fsm_server.svg)
@@ -274,8 +274,10 @@ Bye was send from client and server received it.
 
 ## References
 
-[Project1] Dolejška, D. _Client for a chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-02-14]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%201
+[Project1] Dolejška, D. _Client for a chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-04-22]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%201
 
-[RFC9293] Eddy, W. _Transmission Control Protocol (TCP)_ [online]. August 2022. [cited 2024-02-14]. DOI: 10.17487/RFC9293. Available at: https://datatracker.ietf.org/doc/html/rfc9293
+[Project2] Dolejška, D. _Chat server using IPK24-CHAT protocol_ [online]. February 2024. [cited 2024-04-22]. Available at: https://git.fit.vutbr.cz/NESFIT/IPK-Projects-2024/src/branch/master/Project%202/iota#ipk-project-2-chat-server-using-ipk24-chat-protocol
 
-[RFC768] Postel, J. _User Datagram Protocol_ [online]. March 1997. [cited 2024-02-11]. DOI: 10.17487/RFC0768. Available at: https://datatracker.ietf.org/doc/html/rfc768
+[RFC9293] Eddy, W. _Transmission Control Protocol (TCP)_ [online]. August 2022. [cited 2024-04-22]. DOI: 10.17487/RFC9293. Available at: https://datatracker.ietf.org/doc/html/rfc9293
+
+[RFC768] Postel, J. _User Datagram Protocol_ [online]. March 1997. [cited 2024-04-22]. DOI: 10.17487/RFC0768. Available at: https://datatracker.ietf.org/doc/html/rfc768
